@@ -1,0 +1,1118 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RoboCup: Ultimate</title>
+<script src="https://cdn.jsdelivr.net/npm/tau-prolog@0.3.4/modules/core.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/tau-prolog@0.3.4/modules/lists.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/tau-prolog@0.3.4/modules/random.js"></script>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;700;900&family=JetBrains+Mono:wght@500&display=swap');
+body { font-family:'Inter',sans-serif; background:#0a0a0a; color:#fff; margin:0; overflow-x:hidden; }
+canvas { image-rendering:crisp-edges; }
+.stadium-glow { box-shadow:0 0 50px rgba(34,197,94,0.2); }
+@keyframes pulse-slow { 0%,100%{opacity:.8} 50%{opacity:1} }
+.animate-pulse-slow { animation:pulse-slow 3s infinite; }
+@keyframes goalFlash { 0%{box-shadow:0 0 0 0 rgba(250,204,21,0.9)} 100%{box-shadow:0 0 80px 30px rgba(250,204,21,0)} }
+.goal-flash { animation:goalFlash 0.8s ease-out; }
+#action-log::-webkit-scrollbar { width:4px; }
+#action-log::-webkit-scrollbar-thumb { background:#404040; border-radius:2px; }
+</style>
+</head>
+
+<body class="flex flex-col items-center min-h-screen p-4 gap-4">
+
+<h1 class="text-5xl font-black italic tracking-tighter text-transparent bg-clip-text bg-gradient-to-r from-blue-400 via-white to-red-400 uppercase mt-1 px-3 pb-1" style="white-space:nowrap">
+  RoboCup: Ultimate
+</h1>
+
+<div class="flex items-center gap-6 bg-neutral-900/80 backdrop-blur-md border border-neutral-800 p-4 rounded-2xl stadium-glow">
+  <div class="flex flex-col items-center px-6">
+    <span class="text-[10px] uppercase tracking-[0.2em] text-blue-400 font-bold mb-1">Strikers</span>
+    <span id="score-blue" class="text-5xl font-black font-mono leading-none">0</span>
+  </div>
+  <div class="h-12 w-px bg-neutral-800"></div>
+  <div class="flex flex-col items-center px-4 gap-2">
+    <button id="start-btn" onclick="initSimulation()"
+      class="px-8 py-3 bg-white text-black font-black uppercase tracking-widest rounded-xl hover:bg-neutral-200 transition-all active:scale-95 shadow-lg">
+      Kick Off
+    </button>
+    <span id="status-text" class="text-[10px] uppercase tracking-widest text-neutral-500 font-bold">Ready</span>
+    <span class="text-[9px] uppercase tracking-widest text-neutral-600 font-bold">First to 3 goals</span>
+    <span id="pred-badge" class="hidden text-[9px] uppercase tracking-widest font-bold text-neutral-400 border border-neutral-700 rounded-lg px-3 py-1 mt-1"></span>
+  </div>
+  <div class="h-12 w-px bg-neutral-800"></div>
+  <div class="flex flex-col items-center px-6">
+    <span class="text-[10px] uppercase tracking-[0.2em] text-red-400 font-bold mb-1">Titans</span>
+    <span id="score-red" class="text-5xl font-black font-mono leading-none">0</span>
+  </div>
+</div>
+
+<div class="relative group">
+  <div class="absolute -inset-2 bg-gradient-to-r from-blue-600/20 via-emerald-500/20 to-red-600/20 rounded-3xl blur-2xl opacity-50 group-hover:opacity-100 transition duration-1000"></div>
+  <div id="field-wrap" class="relative bg-neutral-950 p-2 rounded-2xl border-4 border-neutral-800 overflow-hidden">
+    <canvas id="field" width="900" height="450" class="rounded-lg block"></canvas>
+    <div id="winner-overlay" class="hidden absolute inset-0 bg-black/80 backdrop-blur-sm flex flex-col items-center justify-center z-50">
+      <div class="text-[10px] uppercase tracking-[0.3em] text-neutral-500 font-bold mb-2">Full Time</div>
+      <h2 id="winner-text" class="text-6xl font-black italic uppercase tracking-tighter text-yellow-400 mb-3">—</h2>
+      <div id="final-score-display" class="flex items-center gap-4 mb-5">
+        <div class="flex flex-col items-center">
+          <span class="text-[10px] uppercase tracking-widest text-blue-400 font-bold mb-1">Strikers</span>
+          <span id="final-score-blue" class="text-5xl font-black font-mono text-blue-400">0</span>
+        </div>
+        <span class="text-3xl font-black text-neutral-600">–</span>
+        <div class="flex flex-col items-center">
+          <span class="text-[10px] uppercase tracking-widest text-red-400 font-bold mb-1">Titans</span>
+          <span id="final-score-red" class="text-5xl font-black font-mono text-red-400">0</span>
+        </div>
+      </div>
+      <div class="h-px w-40 bg-neutral-700 mb-5"></div>
+      <div id="pred-picked" class="text-[11px] uppercase tracking-[0.25em] text-neutral-400 font-bold mb-1">—</div>
+      <div id="pred-result" class="text-2xl font-black uppercase tracking-[0.3em] text-white mb-8 animate-pulse-slow">—</div>
+      <button onclick="initSimulation()" class="px-10 py-4 bg-yellow-400 text-black font-black uppercase tracking-widest rounded-xl hover:bg-yellow-300 transition-all active:scale-95">Rematch</button>
+    </div>
+    <div id="prediction-overlay" class="hidden absolute inset-0 bg-black/90 backdrop-blur-md flex flex-col items-center justify-center z-40">
+      <h2 class="text-4xl font-black italic uppercase tracking-tighter text-white mb-3">Predict the Winner</h2>
+      <p class="text-neutral-400 text-sm mb-10 tracking-widest uppercase">Your prediction will be checked at full time</p>
+      <div class="flex gap-8">
+        <button onclick="startMatch('team1')" class="group flex flex-col items-center gap-4 p-8 rounded-3xl border-2 border-blue-500/20 hover:border-blue-500 hover:bg-blue-500/10 transition-all active:scale-95 w-48">
+          <div class="w-20 h-20 rounded-full bg-blue-500 shadow-[0_0_30px_rgba(59,130,246,0.6)] group-hover:scale-110 transition-transform" style="min-width:5rem;min-height:5rem"></div>
+          <span class="text-xl font-black uppercase tracking-widest text-blue-400">Strikers</span>
+        </button>
+        <button onclick="startMatch('team2')" class="group flex flex-col items-center gap-4 p-8 rounded-3xl border-2 border-red-500/20 hover:border-red-500 hover:bg-red-500/10 transition-all active:scale-95 w-48">
+          <div class="w-20 h-20 rounded-full bg-red-500 shadow-[0_0_30px_rgba(239,68,68,0.6)] group-hover:scale-110 transition-transform" style="min-width:5rem;min-height:5rem"></div>
+          <span class="text-xl font-black uppercase tracking-widest text-red-400">Titans</span>
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="w-full max-w-5xl flex items-start gap-4">
+  <div class="flex-1 bg-neutral-900 rounded-xl border border-neutral-800 p-4">
+    <div class="text-[10px] uppercase tracking-widest text-neutral-500 font-bold mb-3">Match Stats</div>
+    <div class="grid grid-cols-3 gap-3">
+      <div class="flex flex-col items-center gap-1 bg-neutral-800/60 rounded-lg p-3">
+        <span class="text-lg">🎯</span>
+        <span class="text-[10px] uppercase tracking-widest text-neutral-400 font-bold">Shots</span>
+        <span id="stat-shots" class="text-2xl font-black font-mono">0</span>
+      </div>
+      <div class="flex flex-col items-center gap-1 bg-neutral-800/60 rounded-lg p-3">
+        <span class="text-lg">↗️</span>
+        <span class="text-[10px] uppercase tracking-widest text-neutral-400 font-bold">Passes</span>
+        <span id="stat-passes" class="text-2xl font-black font-mono">0</span>
+      </div>
+      <div class="flex flex-col items-center gap-1 bg-neutral-800/60 rounded-lg p-3">
+        <span class="text-lg">💪</span>
+        <span class="text-[10px] uppercase tracking-widest text-neutral-400 font-bold">Tackles</span>
+        <span id="stat-tackles" class="text-2xl font-black font-mono">0</span>
+      </div>
+    </div>
+  </div>
+  <div class="w-72 bg-neutral-900 rounded-xl border border-neutral-800 p-4">
+    <div class="text-[10px] uppercase tracking-widest text-neutral-500 font-bold mb-2">Action Log</div>
+    <div id="action-log" class="overflow-y-auto max-h-28 flex flex-col gap-0.5 text-xs font-mono">
+      <span class="text-neutral-600">No events yet…</span>
+    </div>
+  </div>
+</div>
+
+<!-- =================================================================
+     PROLOG — Full football simulation
+     Sections:
+       1. Knowledge Representation (static facts)
+       2. Dynamic state declarations
+       3. Reset / initialisation
+       4. Helper predicates
+       5. STRIPS-style action predicates
+       6. FSM / AI behaviors per role
+       7. Ball physics
+       8. Loose-ball pickup (possession-aware)
+       9. Goal detection & scoring
+      10. Main step predicate
+      11. State query
+     ================================================================= -->
+<script id="prolog-logic" type="text/prolog">
+    :- use_module(library(lists)).
+    :- use_module(library(random)).
+
+    % ------------------------------------------------------------------
+    % 1. KNOWLEDGE REPRESENTATION — static field facts
+    % ------------------------------------------------------------------
+    field(size(100, 50)).
+
+    % Each team's attack direction
+    goal_target(team1, 100, 25).   % team1 shoots toward x=100
+    goal_target(team2, 0,   25).   % team2 shoots toward x=0
+
+    % Shooting range thresholds
+    in_shoot_range(team1, X) :- X >= 68.
+    in_shoot_range(team2, X) :- X =< 32.
+
+    % Formation home positions — staggered Y so passes are naturally diagonal
+    home_pos(team1, forward,    62, 20).
+    home_pos(team1, midfielder, 40, 31).
+    home_pos(team1, defender,   22, 18).
+    home_pos(team2, forward,    38, 30).
+    home_pos(team2, midfielder, 60, 19).
+    home_pos(team2, defender,   78, 32).
+
+    % ------------------------------------------------------------------
+    % 2. DYNAMIC STATE
+    % ------------------------------------------------------------------
+    :- dynamic(ball/2).        % ball(pos(X,Y), vel(VX,VY))
+    :- dynamic(player/5).      % player(Team, Role, pos(X,Y), Stamina, State)
+    :- dynamic(score/2).       % score(Team, Goals)
+    :- dynamic(game_over/1).
+    :- dynamic(tick/1).
+    :- dynamic(paused_until/1).
+    :- dynamic(stat/2).        % stat(shots|passes|tackles, N)
+    :- dynamic(last_touch/1).  % last_touch(Team) — who last touched the ball
+    :- dynamic(restart/3).     % restart(Team, X, Y) — pending set-piece restart
+    :- dynamic(pending_reset/2). % pending_reset(KickOffTeam, AtTick) — delayed goal reset
+    :- dynamic(set_piece/1).   % set_piece(throw_in|corner_kick|goal_kick)
+    :- dynamic(kicked_this_tick/0). % flag: at most one kick per tick
+
+    % ------------------------------------------------------------------
+    % 3. RESET / INITIALISATION
+    % ------------------------------------------------------------------
+    reset_game :-
+        retractall(ball(_,_)), retractall(player(_,_,_,_,_)),
+        retractall(score(_,_)), retractall(game_over(_)),
+        retractall(tick(_)),   retractall(paused_until(_)),
+        retractall(stat(_,_)),
+        retractall(last_touch(_)), retractall(restart(_,_,_)),
+        retractall(pending_reset(_,_)), retractall(set_piece(_)),
+        assertz(tick(0)), assertz(paused_until(0)),
+        assertz(ball(pos(50,25), vel(0,0))),
+        assertz(score(team1, 0)), assertz(score(team2, 0)),
+        assertz(stat(shots, 0)), assertz(stat(passes, 0)), assertz(stat(tackles, 0)),
+        assertz(last_touch(team1)),
+        reset_positions(team1).
+
+    reset_positions(KickTeam) :-
+        retractall(player(_,_,_,_,_)),
+        % Team 1 — attacks right
+        (KickTeam == team1 ->
+            assertz(player(team1, forward, pos(50,25), 100, idle))
+        ;   assertz(player(team1, forward, pos(38,22), 100, idle))
+        ),
+        assertz(player(team1, midfielder, pos(32,28), 100, idle)),
+        assertz(player(team1, defender,   pos(18,22), 100, idle)),
+        assertz(player(team1, goalkeeper, pos(5, 25), 100, idle)),
+        % Team 2 — attacks left
+        (KickTeam == team2 ->
+            assertz(player(team2, forward, pos(50,25), 100, idle))
+        ;   assertz(player(team2, forward, pos(62,28), 100, idle))
+        ),
+        assertz(player(team2, midfielder, pos(68,22), 100, idle)),
+        assertz(player(team2, defender,   pos(82,28), 100, idle)),
+        assertz(player(team2, goalkeeper, pos(95,25), 100, idle)).
+
+    % ------------------------------------------------------------------
+    % 4. HELPERS
+    % ------------------------------------------------------------------
+    limit(V, L, H, O) :- O is max(L, min(H, V)).
+
+    normalize(DX, DY, NX, NY) :-
+        D is sqrt(DX*DX + DY*DY),
+        (D > 0.001 -> NX is DX/D, NY is DY/D ; NX = 0, NY = 0).
+
+    pdist(X1, Y1, X2, Y2, D) :-
+        D is sqrt((X2-X1)*(X2-X1) + (Y2-Y1)*(Y2-Y1)).
+
+    % Which non-GK player on Team is nearest the ball right now?
+    nearest_to_ball(Team, Role) :-
+        ball(pos(BX,BY), _),
+        findall(D-R,
+            (player(Team, R, pos(PX,PY), _, _), R \= goalkeeper,
+             D is sqrt((BX-PX)*(BX-PX)+(BY-PY)*(BY-PY))),
+            Ds),
+        Ds \= [],
+        keysort(Ds, [_-Role|_]).
+
+    % 2D separation — push away from nearest neighbour in any direction (no oscillation)
+    sep(PX, PY, DX, DY) :-
+        findall(D-pos(OX,OY),
+            (player(_,_,pos(OX,OY),_,_),
+             D is sqrt((OX-PX)*(OX-PX)+(OY-PY)*(OY-PY)),
+             D > 0.05, D < 6),
+            Ds),
+        (Ds \= [] ->
+            keysort(Ds, [MD-pos(MX,MY)|_]),
+            (MD < 5 ->
+                Scale is (5 - MD) / 5 * 0.35,
+                AwayX is PX - MX, AwayY is PY - MY,
+                AwayD is sqrt(AwayX*AwayX + AwayY*AwayY + 0.001),
+                DX is AwayX / AwayD * Scale,
+                DY is AwayY / AwayD * Scale
+            ; DX=0, DY=0)
+        ;   DX=0, DY=0).
+
+    % Stamina: drains any time a player moves, faster when dribbling or kicking.
+    % Threshold 0.15 ensures even half-speed movements drain stamina visibly.
+    upd_stam(S, Spd, NS, St, NSt) :-
+        (St == exhausted ->
+            (S > 30 -> NSt = idle ; NSt = exhausted),
+            NS is min(100, S + 1.2)
+        ;
+            (S < 3 -> NSt = exhausted ; NSt = St),
+            (Spd > 0.15 -> NS is max(0, S - 0.2)   % drain whenever actually moving
+                         ; NS is min(100, S + 0.4)) % recover only when nearly stopped
+        ).
+
+    bump(Name) :-
+        stat(Name, V), NV is V+1,
+        retract(stat(Name, V)), assertz(stat(Name, NV)).
+
+    % Move Team/Role one step toward (TX,TY) at speed Spd, with separation
+    step_toward(Team, Role, PX, PY, TX, TY, S, St, Spd) :-
+        normalize(TX-PX, TY-PY, NX, NY),
+        sep(PX, PY, SDX, SDY),
+        NX2 is PX + (NX + SDX*0.25)*Spd,
+        NY2 is PY + (NY*0.9 + SDY*0.25)*Spd,
+        limit(NX2, 1, 99, CX), limit(NY2, 1, 49, CY),
+        upd_stam(S, Spd, NS, St, NSt),
+        retract(player(Team, Role, _, _, _)),
+        assertz(player(Team, Role, pos(CX,CY), NS, NSt)).
+
+    % ------------------------------------------------------------------
+    % 5. AI BEHAVIORS — proximity-based kicking
+    %
+    % No carrier concept. Any player within D < 4 of the ball can kick it
+    % (subject to kicked_this_tick — at most one kick per tick globally).
+    % Players chase the ball when nearest on their team, otherwise take up
+    % tactical positions. GK kicks loose balls within D < 3.5.
+    % ------------------------------------------------------------------
+
+    % ---- FORWARD ----
+    ai_behavior(T, forward) :-
+        player(T, forward, pos(PX,PY), S, St),
+        ball(pos(BX,BY), _),
+        (St == exhausted -> Spd = 0.25 ; Spd = 0.88),
+        D is sqrt((BX-PX)*(BX-PX)+(BY-PY)*(BY-PY)),
+
+        (D < 4, St \= exhausted, \+ kicked_this_tick, in_shoot_range(T, BX), BY > 8, BY < 42 ->
+            % In shoot range — fire at goal
+            goal_target(T, GX, _),
+            random(17, 33, TY),
+            normalize(GX-BX, TY-BY, NX, NY),
+            VX is NX*3.2, VY is NY*3.2,
+            retract(ball(_,_)), assertz(ball(pos(BX,BY), vel(VX,VY))),
+            assertz(kicked_this_tick),
+            NS is max(0, S-8),
+            retractall(last_touch(_)), assertz(last_touch(T)),
+            bump(shots),
+            retract(player(T,forward,_,_,_)), assertz(player(T,forward,pos(PX,PY),NS,shooting))
+
+        ; D < 4, St \= exhausted, \+ kicked_this_tick ->
+            % Not in shoot range — nudge ball forward (dribble-style)
+            goal_target(T, GX, GY),
+            normalize(GX-BX, GY-BY, NX, NY),
+            VX is NX*1.1, VY is NY*1.1,
+            retract(ball(_,_)), assertz(ball(pos(BX,BY), vel(VX,VY))),
+            assertz(kicked_this_tick),
+            retractall(last_touch(_)), assertz(last_touch(T)),
+            NS is max(0, S-3),
+            retract(player(T,forward,_,_,_)), assertz(player(T,forward,pos(PX,PY),NS,dribbling))
+
+        ; nearest_to_ball(T, forward) ->
+            % Nearest on team to ball — chase it
+            step_toward(T, forward, PX, PY, BX, BY, S, St, Spd)
+
+        ;
+            % Support run: push into attacking space ahead
+            goal_target(T, GX, _),
+            (PY < 25 -> RunY = 19 ; RunY = 31),
+            (T == team1 -> RunX is min(GX-8, PX+14) ; RunX is max(GX+8, PX-14)),
+            step_toward(T, forward, PX, PY, RunX, RunY, S, St, Spd*0.7)
+        ).
+
+    % ---- MIDFIELDER ----
+    ai_behavior(T, midfielder) :-
+        player(T, midfielder, pos(PX,PY), S, St),
+        ball(pos(BX,BY), _),
+        (St == exhausted -> Spd = 0.2 ; Spd = 0.78),
+        goal_target(T, GX, _),
+        D is sqrt((BX-PX)*(BX-PX)+(BY-PY)*(BY-PY)),
+
+        (D < 4, St \= exhausted, \+ kicked_this_tick ->
+            % In range — pass toward forward's position
+            (player(T, forward, pos(FX,FY), _, _) ->
+                random(-3, 4, RX), random(-3, 4, RY),
+                AimX is FX + RX,
+                AimY is max(5, min(45, FY + RY)),
+                normalize(AimX-BX, AimY-BY, NX, NY),
+                AimDist is sqrt((AimX-BX)*(AimX-BX)+(AimY-BY)*(AimY-BY)),
+                PassSpd is min(2.2, max(0.7, AimDist * 0.058)),
+                VX is NX*PassSpd, VY is NY*PassSpd
+            ;
+                % No forward visible — kick toward goal
+                random(18, 32, TY),
+                normalize(GX-BX, TY-BY, NX, NY),
+                VX is NX*2.0, VY is NY*2.0
+            ),
+            retract(ball(_,_)), assertz(ball(pos(BX,BY), vel(VX,VY))),
+            assertz(kicked_this_tick),
+            NS is max(0, S-5),
+            retractall(last_touch(_)), assertz(last_touch(T)),
+            bump(passes),
+            retract(player(T,midfielder,_,_,_)), assertz(player(T,midfielder,pos(PX,PY),NS,passing))
+
+        ; nearest_to_ball(T, midfielder) ->
+            % Nearest on team to ball — chase it
+            step_toward(T, midfielder, PX, PY, BX, BY, S, St, Spd)
+
+        ;
+            % Drift into open lane between ball and own forward
+            (T==team1 -> LX is min(BX+10, GX-18) ; LX is max(BX-10, GX+18)),
+            SY is (BY + 25) * 0.5,
+            step_toward(T, midfielder, PX, PY, LX, SY, S, St, Spd*0.65)
+        ).
+
+    % ---- DEFENDER ----
+    ai_behavior(T, defender) :-
+        player(T, defender, pos(PX,PY), S, St),
+        ball(pos(BX,BY), _),
+        (T == team1 -> Opp = team2 ; Opp = team1),
+        (T == team1 -> OwnGoalX = 0 ; OwnGoalX = 100),
+        (St == exhausted -> Spd = 0.2 ; Spd = 0.72),
+        D is sqrt((BX-PX)*(BX-PX)+(BY-PY)*(BY-PY)),
+
+        (D < 4, \+ kicked_this_tick ->
+            % In range — clear toward own team's midfield
+            goal_target(T, GX, _),
+            random(10, 40, TY),
+            normalize(GX-BX, TY-BY, NX, NY),
+            VX is NX*2.2, VY is NY*2.2,
+            retract(ball(_,_)), assertz(ball(pos(BX,BY), vel(VX,VY))),
+            assertz(kicked_this_tick),
+            NS is max(0, S-6),
+            retractall(last_touch(_)), assertz(last_touch(T)),
+            bump(tackles),
+            retract(player(T,defender,_,_,_)), assertz(player(T,defender,pos(PX,PY),NS,tackling))
+
+        ; nearest_to_ball(T, defender) ->
+            % Nearest on team to ball — chase
+            step_toward(T, defender, PX, PY, BX, BY, S, St, Spd)
+
+        ;
+            % Mark the opponent forward — stand between them and own goal
+            (player(Opp, forward, pos(OFX,OFY), _, _) ->
+                MarkX is (OFX + OwnGoalX) * 0.5,
+                step_toward(T, defender, PX, PY, MarkX, OFY, S, St, Spd*0.55)
+            ;
+                home_pos(T, defender, HX, HY),
+                step_toward(T, defender, PX, PY, HX, HY, S, St, Spd*0.4)
+            )
+        ).
+
+    % ---- GOALKEEPER ----
+    ai_behavior(T, goalkeeper) :-
+        player(T, goalkeeper, pos(PX,PY), _, _),
+        ball(pos(BX,BY), _),
+        (T == team1 -> GKX = 5 ; GKX = 95),
+        limit(BY, 17, 33, TY),
+        DistBall is sqrt((BX-PX)*(BX-PX)+(BY-PY)*(BY-PY)),
+
+        (DistBall < 3.5, \+ kicked_this_tick ->
+            % Ball within reach — distribute toward midfield
+            goal_target(T, GX, _),
+            random(15, 35, KTY),
+            normalize(GX-BX, KTY-BY, KNX, KNY),
+            KVX is KNX*2.8, KVY is KNY*2.8,
+            assertz(kicked_this_tick),
+            retractall(last_touch(_)), assertz(last_touch(T)),
+            retract(ball(_,_)), assertz(ball(pos(BX,BY), vel(KVX,KVY))),
+            retract(player(T,goalkeeper,_,_,_)),
+            assertz(player(T,goalkeeper,pos(PX,PY),100,saving))
+
+        ;
+            % Track ball Y, stay near own goal line
+            normalize(GKX-PX, TY-PY, NX, NY),
+            NX2 is PX + NX*0.5, NY2 is PY + NY*0.5,
+            (T==team1 -> limit(NX2,1,12,CX) ; limit(NX2,88,99,CX)),
+            limit(NY2,17,33,CY),
+            retract(player(T,goalkeeper,_,_,_)),
+            assertz(player(T,goalkeeper,pos(CX,CY),100,idle))
+        ).
+
+    % ------------------------------------------------------------------
+    % 6. BALL PHYSICS — velocity + friction + out-of-play detection
+    % Out-of-play: top/bottom = throw-in, left/right non-goal = corner/goal kick.
+    % ------------------------------------------------------------------
+    update_ball :-
+        ball(pos(X,Y), vel(VX,VY)),
+        NX is X + VX, NY is Y + VY,
+        (NY < 0 ->
+            % Top wall — throw-in for opponent of last toucher
+            ClampX is max(1, min(99, NX)),
+            retract(ball(_,_)), assertz(ball(pos(ClampX, 1), vel(0,0))),
+            trigger_throw_in(ClampX, 1)
+        ; NY > 50 ->
+            % Bottom wall — throw-in
+            ClampX is max(1, min(99, NX)),
+            retract(ball(_,_)), assertz(ball(pos(ClampX, 49), vel(0,0))),
+            trigger_throw_in(ClampX, 49)
+        ; (NX < 0, (NY =< 16 ; NY >= 34)) ->
+            % Left wall, non-goal — corner or goal kick
+            ClampY is max(1, min(49, NY)),
+            retract(ball(_,_)), assertz(ball(pos(1, ClampY), vel(0,0))),
+            trigger_set_piece(left, ClampY)
+        ; (NX > 100, (NY =< 16 ; NY >= 34)) ->
+            % Right wall, non-goal — corner or goal kick
+            ClampY is max(1, min(49, NY)),
+            retract(ball(_,_)), assertz(ball(pos(99, ClampY), vel(0,0))),
+            trigger_set_piece(right, ClampY)
+        ;
+            % Normal in-play — apply friction
+            NVX is VX * 0.965,
+            NVY is VY * 0.965,
+            limit(NX, -2, 102, CX), limit(NY, 1, 49, CY),
+            retract(ball(_,_)), assertz(ball(pos(CX,CY), vel(NVX,NVY)))
+        ).
+
+    % Throw-in: ball out top/bottom — give to opponent of last toucher
+    % Place restart slightly inside field so first kick isn't from the edge
+    trigger_throw_in(X, BallY) :-
+        (last_touch(LT) -> (LT == team1 -> OT = team2 ; OT = team1) ; OT = team2),
+        SafeY is (BallY < 25 -> 5 ; 45),
+        tick(Cur), PauseEnd is Cur + 30,
+        retractall(paused_until(_)), assertz(paused_until(PauseEnd)),
+        retractall(set_piece(_)), assertz(set_piece(throw_in)),
+        retractall(restart(_,_,_)), assertz(restart(OT, X, SafeY)).
+
+    % Set piece: ball out at left or right wall (non-goal area)
+    % Left wall = team1's defensive end; right wall = team2's defensive end.
+    % Defending team last touched → corner kick for attacking team.
+    % Attacking team last touched → goal kick for defending team.
+    trigger_set_piece(Side, Y) :-
+        (last_touch(LT) -> LT2 = LT ; LT2 = team1),
+        (Side == left -> DefTeam = team1, AtkTeam = team2
+        ;                DefTeam = team2, AtkTeam = team1),
+        tick(Cur), PauseEnd is Cur + 35,
+        retractall(paused_until(_)), assertz(paused_until(PauseEnd)),
+        (LT2 == DefTeam ->
+            % Corner kick for attacking team — keep away from wall edges
+            (Side == left -> CornerX = 6 ; CornerX = 94),
+            (Y < 25 -> CornerY = 6 ; CornerY = 44),
+            retractall(set_piece(_)), assertz(set_piece(corner_kick)),
+            retractall(restart(_,_,_)), assertz(restart(AtkTeam, CornerX, CornerY))
+        ;
+            % Goal kick for defending team — ball to GK position
+            (Side == left -> GKX = 5 ; GKX = 95),
+            retractall(set_piece(_)), assertz(set_piece(goal_kick)),
+            retractall(restart(_,_,_)), assertz(restart(DefTeam, GKX, 25))
+        ).
+
+    % ------------------------------------------------------------------
+    % 7. GOAL DETECTION & SCORING
+    % ------------------------------------------------------------------
+    process_goals :-
+        ball(pos(X,Y), _),
+        (X > 99, Y > 16, Y < 34 -> score_goal(team1)
+        ; X <  1, Y > 16, Y < 34 -> score_goal(team2)
+        ; true
+        ).
+
+    score_goal(T) :-
+        score(T, S), NS is S+1,
+        retract(score(T,S)), assertz(score(T,NS)),
+        (NS >= 3 ->
+            assertz(game_over(T))
+        ;
+            (T == team1 -> NextKO = team2 ; NextKO = team1),
+            tick(Cur),
+            % Ball stays in the goal for 90 ticks, then resets at tick Cur+90
+            % Full pause lasts until Cur+120 (30 extra ticks at centre)
+            GoalPause is Cur + 120,
+            ResetAt   is Cur + 90,
+            retractall(paused_until(_)),   assertz(paused_until(GoalPause)),
+            retractall(pending_reset(_,_)), assertz(pending_reset(NextKO, ResetAt)),
+            retractall(restart(_,_,_)),
+            % Freeze ball at current goal position (do NOT move to centre yet)
+            ball(pos(BX,BY), _),
+            retract(ball(_,_)), assertz(ball(pos(BX,BY), vel(0,0)))
+        ).
+
+    % ------------------------------------------------------------------
+    % 8. MAIN STEP — one game tick
+    % ------------------------------------------------------------------
+    step :-
+        \+ game_over(_),
+        tick(T), NT is T+1,
+        retract(tick(T)), assertz(tick(NT)),
+        % Clear per-tick kick flag
+        retractall(kicked_this_tick),
+        % Check if delayed goal reset is due (ball moves to centre mid-pause)
+        (pending_reset(NextKO, ResetTick), NT >= ResetTick ->
+            retractall(pending_reset(_,_)),
+            retractall(ball(_,_)), assertz(ball(pos(50,25), vel(0,0))),
+            reset_positions(NextKO)
+        ; true),
+        (paused_until(P), NT < P ->
+            true   % paused — no AI
+        ;
+            % Apply any pending set-piece / throw-in restart
+            (restart(RTeam, RX, RY) ->
+                retractall(restart(_,_,_)),
+                retractall(set_piece(_)),
+                retractall(last_touch(_)), assertz(last_touch(RTeam)),
+                retract(ball(_,_)), assertz(ball(pos(RX, RY), vel(0,0)))
+            ; true),
+            % Randomise which team acts first (prevents systematic bias)
+            random(R),
+            (R > 0.5 ->
+                (ai_behavior(team1,forward), ai_behavior(team1,midfielder),
+                 ai_behavior(team1,defender), ai_behavior(team1,goalkeeper),
+                 ai_behavior(team2,forward), ai_behavior(team2,midfielder),
+                 ai_behavior(team2,defender), ai_behavior(team2,goalkeeper))
+            ;
+                (ai_behavior(team2,forward), ai_behavior(team2,midfielder),
+                 ai_behavior(team2,defender), ai_behavior(team2,goalkeeper),
+                 ai_behavior(team1,forward), ai_behavior(team1,midfielder),
+                 ai_behavior(team1,defender), ai_behavior(team1,goalkeeper))
+            ),
+            update_ball,
+            process_goals
+        ).
+
+    % ------------------------------------------------------------------
+    % 9. STATE QUERY
+    % ------------------------------------------------------------------
+    get_all_state(BX, BY, Players, Score1, Score2, OT, OR, EvLabel) :-
+        ball(pos(BX,BY), _),
+        findall(p(T,R,X,Y,S,St), player(T,R,pos(X,Y),S,St), Players),
+        score(team1, Score1), score(team2, Score2),
+        OT = none, OR = none,
+        (set_piece(EvLabel) -> true ; EvLabel = none).
+
+    get_stats(Shots, Passes, Tackles) :-
+        stat(shots, Shots), stat(passes, Passes), stat(tackles, Tackles).
+</script>
+
+<!-- ================================================================
+     JAVASCRIPT ENGINE — callback-chained RAF (no promise stacking)
+     ================================================================ -->
+<script>
+    const canvas = document.getElementById('field');
+    const ctx    = canvas.getContext('2d');
+    const SCALE  = 9;
+
+    let session        = null;
+    let running        = false;
+    let requestRef     = null;
+    let lastTime       = 0;
+    let userPrediction = null;
+    const stepRate     = 1000 / 60;
+
+    let prevS1 = 0, prevS2 = 0;
+    let prevOT = 'none', prevOR = 'none';
+    let fieldLabel = '', fieldLabelAlpha = 0, prevFieldLabel = '';
+    let goalOverlayTimer = 0;
+    let gameOverState = null;   // set when match ends, drives canvas result panel
+
+    // ----------------------------------------------------------------
+    // Init / Kick Off
+    // ----------------------------------------------------------------
+    function initSimulation() {
+        if (requestRef) cancelAnimationFrame(requestRef);
+        running = false;
+        gameOverState = null;
+        document.getElementById('winner-overlay').classList.add('hidden');
+        document.getElementById('prediction-overlay').classList.remove('hidden');
+        document.getElementById('status-text').innerText = 'Pick a team';
+        document.getElementById('pred-badge').classList.add('hidden');
+    }
+
+    function startMatch(pred) {
+        userPrediction = pred;
+        document.getElementById('prediction-overlay').classList.add('hidden');
+        document.getElementById('status-text').innerText = 'Loading…';
+        const badge = document.getElementById('pred-badge');
+        badge.innerText = 'Predicted: ' + (pred === 'team1' ? 'Strikers' : 'Titans');
+        badge.classList.remove('hidden');
+        ['score-blue','score-red'].forEach(id => document.getElementById(id).innerText = '0');
+        ['stat-shots','stat-passes','stat-tackles'].forEach(id => document.getElementById(id).innerText = '0');
+        document.getElementById('action-log').innerHTML = '';
+        prevS1 = 0; prevS2 = 0; prevOT = 'none'; prevOR = 'none';
+        fieldLabel = ''; fieldLabelAlpha = 0; prevFieldLabel = ''; goalOverlayTimer = 0;
+
+        session = pl.create(3000);
+        session.consult(document.getElementById('prolog-logic').textContent, {
+            success: () => {
+                session.query('reset_game.', {
+                    success: () => {
+                        session.answer({
+                            success: () => {
+                                running = true;
+                                document.getElementById('status-text').innerText = 'Match Live';
+                                document.getElementById('start-btn').innerText = 'Reset';
+                                lastTime = performance.now();
+                                loop(lastTime);
+                            },
+                            error: e => console.error('reset answer:', e)
+                        });
+                    },
+                    error: e => console.error('reset query:', e)
+                });
+            },
+            error: e => console.error('consult:', e)
+        });
+    }
+
+    // ----------------------------------------------------------------
+    // RAF loop — next frame only fired from inside draw callback
+    // ----------------------------------------------------------------
+    function loop(ts) {
+        if (!running || !session) return;
+        if (ts - lastTime >= stepRate) {
+            lastTime = ts;
+            session.query('step.', {
+                success: () => {
+                    session.answer({
+                        success: (ans) => {
+                            if (!ans) handleGameOver();
+                            updateStateAndDraw();
+                        },
+                        error: () => { handleGameOver(); updateStateAndDraw(); }
+                    });
+                },
+                error: () => { handleGameOver(); updateStateAndDraw(); }
+            });
+        } else {
+            requestRef = requestAnimationFrame(loop);
+        }
+    }
+
+    function scheduleNext() {
+        if (running) requestRef = requestAnimationFrame(loop);
+    }
+
+    // ----------------------------------------------------------------
+    // Query Prolog state then draw
+    // ----------------------------------------------------------------
+    function updateStateAndDraw() {
+        session.query('get_all_state(BX,BY,Players,S1,S2,OT,OR,EL).', {
+            success: () => {
+                session.answer({
+                    success: (ans) => {
+                        if (!ans) { scheduleNext(); return; }
+
+                        const bx = ans.lookup('BX').value;
+                        const by = ans.lookup('BY').value;
+                        const s1 = ans.lookup('S1').value;
+                        const s2 = ans.lookup('S2').value;
+                        const ot = termId(ans.lookup('OT'));
+                        const or_= termId(ans.lookup('OR'));
+                        const el = termId(ans.lookup('EL'));
+
+                        // Event label (throw-in / corner / goal kick)
+                        const labelMap = {
+                            throw_in:    '⟵ THROW IN ⟶',
+                            corner_kick: '⚑ CORNER KICK',
+                            goal_kick:   '🥅 GOAL KICK'
+                        };
+                        if (el !== 'none' && labelMap[el]) {
+                            fieldLabel = labelMap[el];
+                            fieldLabelAlpha = 1.0;
+                            if (el !== prevFieldLabel) {
+                                addLog('📢 ' + labelMap[el], 'event');
+                                prevFieldLabel = el;
+                            }
+                        } else {
+                            prevFieldLabel = '';
+                            fieldLabelAlpha = Math.max(0, fieldLabelAlpha - 0.04);
+                            if (fieldLabelAlpha <= 0) fieldLabel = '';
+                        }
+
+                        // Score events
+                        if (s1 !== prevS1 || s2 !== prevS2) {
+                            addLog(`⚽ GOAL!  ${s1} – ${s2}`, 'goal');
+                            flashGoal();
+                            goalOverlayTimer = 110;
+                            document.getElementById('score-blue').innerText = s1;
+                            document.getElementById('score-red').innerText  = s2;
+                            prevS1 = s1; prevS2 = s2;
+                        }
+
+                        // Possession events
+                        if (ot !== prevOT || or_ !== prevOR) {
+                            if (ot !== 'none') {
+                                const tn = ot === 'team1' ? 'Strikers' : 'Titans';
+                                const logType = or_ === 'forward' || or_ === 'midfielder' ? 'carry' : 'defend';
+                                addLog(`🏃 ${tn} ${or_}`, logType);
+                            } else if (prevOT !== 'none') {
+                                addLog('💨 Ball released!', 'shot');
+                            }
+                            prevOT = ot; prevOR = or_;
+                        }
+
+                        // Parse player list
+                        const players = [];
+                        let list = ans.lookup('Players');
+                        while (list && list.indicator === './2') {
+                            const p = list.args[0];
+                            players.push({
+                                team:    p.args[0].id,
+                                role:    p.args[1].id,
+                                x:       p.args[2].value,
+                                y:       p.args[3].value,
+                                stamina: p.args[4].value,
+                                state:   termId(p.args[5])
+                            });
+                            list = list.args[1];
+                        }
+
+                        draw(bx, by, players, ot, or_, fieldLabel, fieldLabelAlpha, goalOverlayTimer);
+
+                        // Stats
+                        session.query('get_stats(Shots,Passes,Tackles).', {
+                            success: () => {
+                                session.answer({
+                                    success: (m) => {
+                                        if (m) {
+                                            document.getElementById('stat-shots').innerText   = m.lookup('Shots').value;
+                                            document.getElementById('stat-passes').innerText  = m.lookup('Passes').value;
+                                            document.getElementById('stat-tackles').innerText = m.lookup('Tackles').value;
+                                        }
+                                        scheduleNext();
+                                    },
+                                    error: scheduleNext
+                                });
+                            },
+                            error: scheduleNext
+                        });
+                    },
+                    error: scheduleNext
+                });
+            },
+            error: scheduleNext
+        });
+    }
+
+    function termId(t) {
+        if (!t) return 'none';
+        if (t.id !== undefined) return t.id;
+        if (t.value !== undefined) return String(t.value);
+        return 'none';
+    }
+
+    // ----------------------------------------------------------------
+    // Game over
+    // ----------------------------------------------------------------
+    // Detect game over from already-known scores — no second Prolog query needed.
+    // (Avoids the Tau Prolog single-active-query limitation that causes race conditions.)
+    function handleGameOver() {
+        if (gameOverState) return;   // already handled
+        const w = prevS1 >= 3 ? 'team1' : prevS2 >= 3 ? 'team2' : null;
+        if (!w) return;              // scores haven't reached 3 yet (step failed for other reason)
+        running = false;
+        if (requestRef) cancelAnimationFrame(requestRef);
+        document.getElementById('status-text').innerText = 'Full Time';
+        document.getElementById('start-btn').innerText = 'Kick Off';
+        const ok          = userPrediction === w;
+        const winnerName  = w === 'team1' ? 'Strikers' : 'Titans';
+        const predName    = userPrediction === 'team1' ? 'Strikers'
+                          : userPrediction === 'team2' ? 'Titans' : '—';
+        gameOverState = { winner: w, winnerName, s1: prevS1, s2: prevS2, predName, ok };
+        addLog(w === 'team1' ? '🏆 Strikers Win!' : '🏆 Titans Win!', 'goal');
+        // drawGameOverPanel() will be called inside the next updateStateAndDraw → draw()
+    }
+
+    // ----------------------------------------------------------------
+    // Game-over result panel — drawn directly on the canvas
+    // Uses manual rounded-rect path (broad browser support)
+    // ----------------------------------------------------------------
+    function canvasRRect(x, y, w, h, r) {
+        ctx.beginPath();
+        ctx.moveTo(x + r, y);
+        ctx.lineTo(x + w - r, y);
+        ctx.arcTo(x + w, y,     x + w, y + r,     r);
+        ctx.lineTo(x + w, y + h - r);
+        ctx.arcTo(x + w, y + h, x + w - r, y + h, r);
+        ctx.lineTo(x + r, y + h);
+        ctx.arcTo(x,     y + h, x,       y + h - r, r);
+        ctx.lineTo(x, y + r);
+        ctx.arcTo(x,     y,     x + r,   y,         r);
+        ctx.closePath();
+    }
+
+    function drawGameOverPanel() {
+        const gos = gameOverState;
+        if (!gos) return;
+        const W = canvas.width, H = canvas.height;
+        const teamColor = gos.winner === 'team1' ? '#60a5fa' : '#f87171';
+        const pw = 440, ph = 264;
+        const px = (W - pw) / 2, py = (H - ph) / 2;
+        const cx = W / 2;
+
+        ctx.save();
+
+        // Panel background
+        ctx.globalAlpha = 0.97;
+        ctx.fillStyle = '#0d1117';
+        canvasRRect(px, py, pw, ph, 16);
+        ctx.fill();
+
+        // Colored border
+        ctx.globalAlpha = 0.8;
+        ctx.strokeStyle = teamColor;
+        ctx.lineWidth = 2;
+        canvasRRect(px, py, pw, ph, 16);
+        ctx.stroke();
+
+        ctx.globalAlpha = 1;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+
+        // FULL TIME
+        ctx.fillStyle = '#6b7280';
+        ctx.font = 'bold 11px Inter,sans-serif';
+        ctx.fillText('F U L L   T I M E', cx, py + 28);
+
+        // Winner name
+        ctx.fillStyle = teamColor;
+        ctx.font = 'bold italic 42px Inter,sans-serif';
+        ctx.fillText(gos.winnerName.toUpperCase() + ' WIN!', cx, py + 80);
+
+        // Score
+        ctx.fillStyle = '#ffffff';
+        ctx.font = 'bold 50px JetBrains Mono,monospace';
+        ctx.fillText(gos.s1 + '  \u2013  ' + gos.s2, cx, py + 136);
+
+        // Divider
+        ctx.fillStyle = '#374151';
+        ctx.fillRect(cx - 100, py + 158, 200, 1);
+
+        // Prediction line
+        ctx.fillStyle = '#9ca3af';
+        ctx.font = 'bold 12px Inter,sans-serif';
+        ctx.fillText('YOU PREDICTED: ' + gos.predName.toUpperCase(), cx, py + 178);
+
+        // Prediction result
+        ctx.fillStyle = gos.ok ? '#34d399' : '#f87171';
+        ctx.font = 'bold 17px Inter,sans-serif';
+        ctx.fillText(gos.ok ? '\u2713  CORRECT PREDICTION!' : '\u2717  WRONG PREDICTION', cx, py + 204);
+
+        // Rematch button
+        const bw = 160, bh = 40, bx2 = cx - bw / 2, by2 = py + ph - 54;
+        ctx.fillStyle = '#facc15';
+        canvasRRect(bx2, by2, bw, bh, 10);
+        ctx.fill();
+        ctx.fillStyle = '#000';
+        ctx.font = 'bold 14px Inter,sans-serif';
+        ctx.fillText('REMATCH', cx, by2 + bh / 2);
+
+        ctx.restore();
+    }
+
+    function flashGoal() {
+        const fw = document.getElementById('field-wrap');
+        fw.classList.add('goal-flash');
+        setTimeout(() => fw.classList.remove('goal-flash'), 800);
+    }
+
+    function addLog(text, type) {
+        const el = document.createElement('div');
+        el.textContent = text;
+        el.className = 'leading-relaxed';
+        if      (type === 'goal')   el.style.color = '#facc15';
+        else if (type === 'shot')   el.style.color = '#f97316';
+        else if (type === 'carry')  el.style.color = '#60a5fa';
+        else if (type === 'defend') el.style.color = '#a78bfa';
+        else if (type === 'event')  el.style.color = '#34d399';
+        else                        el.style.color = '#d1d5db';
+        const log = document.getElementById('action-log');
+        log.insertBefore(el, log.firstChild);
+        while (log.children.length > 8) log.removeChild(log.lastChild);
+    }
+
+    // ----------------------------------------------------------------
+    // DRAW
+    // ----------------------------------------------------------------
+    function draw(bx, by, players, ownerTeam, ownerRole, evLabel, evAlpha, goalTimer) {
+        const W = canvas.width, H = canvas.height, S = SCALE;
+
+        // Field background
+        ctx.fillStyle = '#1b4332';
+        ctx.fillRect(0, 0, W, H);
+
+        // Alternating pitch stripes
+        for (let i = 0; i < 10; i++) {
+            if (i % 2 === 0) { ctx.fillStyle = 'rgba(0,0,0,0.07)'; ctx.fillRect(i*90,0,90,H); }
+        }
+
+        ctx.save();
+
+        // --- Field markings ---
+        ctx.strokeStyle = 'rgba(255,255,255,0.55)';
+        ctx.lineWidth   = 2;
+        ctx.strokeRect(10, 10, W-20, H-20);                               // outer border
+
+        ctx.beginPath(); ctx.moveTo(W/2,10); ctx.lineTo(W/2,H-10); ctx.stroke(); // halfway
+
+        ctx.beginPath(); ctx.arc(W/2,H/2,60,0,Math.PI*2); ctx.stroke();   // centre circle
+        ctx.beginPath(); ctx.arc(W/2,H/2,4,0,Math.PI*2);
+        ctx.fillStyle = 'rgba(255,255,255,0.7)'; ctx.fill();               // centre spot
+
+        // Corner arcs
+        ctx.lineWidth = 1.5; ctx.strokeStyle = 'rgba(255,255,255,0.4)';
+        [[10,10,0,Math.PI/2],[W-10,10,Math.PI/2,Math.PI],
+         [10,H-10,-Math.PI/2,0],[W-10,H-10,Math.PI,1.5*Math.PI]].forEach(([cx,cy,a0,a1]) => {
+            ctx.beginPath(); ctx.arc(cx,cy,20,a0,a1); ctx.stroke();
+        });
+
+        // Goal boxes (field Y 16–34 → pixel Y 144–306, height 162px)
+        const gy = H/2-81, gh = 162;
+        ctx.fillStyle   = 'rgba(255,255,255,0.05)';
+        ctx.strokeStyle = 'rgba(255,255,255,0.55)';
+        ctx.lineWidth   = 1.5;
+        ctx.fillRect(10,gy,65,gh);    ctx.strokeRect(10,gy,65,gh);
+        ctx.fillRect(W-75,gy,65,gh);  ctx.strokeRect(W-75,gy,65,gh);
+
+        // Goal nets
+        ctx.fillStyle = 'rgba(255,255,255,0.08)';
+        ctx.fillRect(0,gy,10,gh);
+        ctx.fillRect(W-10,gy,10,gh);
+
+        // Penalty spots
+        ctx.fillStyle = 'rgba(255,255,255,0.6)';
+        [150,W-150].forEach(px => { ctx.beginPath(); ctx.arc(px,H/2,4,0,Math.PI*2); ctx.fill(); });
+
+        // Team labels
+        ctx.font = 'bold 11px Inter,sans-serif';
+        ctx.fillStyle = 'rgba(96,165,250,0.65)';
+        ctx.textAlign = 'left';  ctx.fillText('STRIKERS →', 18, H-14);
+        ctx.fillStyle = 'rgba(252,165,165,0.65)';
+        ctx.textAlign = 'right'; ctx.fillText('← TITANS', W-18, H-14);
+        ctx.restore();
+
+        // --- Players ---
+        (players||[]).forEach(p => {
+            if (p.x == null) return;
+            drawPlayer(p.x*S, p.y*S, p.team, p.role, p.stamina, p.state,
+                       p.team === ownerTeam && p.role === ownerRole);
+        });
+
+        // --- Ball ---
+        ctx.save();
+        ctx.shadowColor = 'rgba(255,255,255,0.9)'; ctx.shadowBlur = 18;
+        ctx.beginPath(); ctx.arc(bx*S, by*S, 7, 0, Math.PI*2);
+        ctx.fillStyle = '#fff'; ctx.fill();
+        ctx.shadowBlur = 0;
+        ctx.strokeStyle = 'rgba(0,0,0,0.25)'; ctx.lineWidth = 1; ctx.stroke();
+        ctx.restore();
+
+        // Helper: draw a centered pill label
+        function drawPill(text, cy, color, alpha) {
+            ctx.save();
+            ctx.globalAlpha = alpha;
+            ctx.font = 'bold 22px Inter,sans-serif';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            const tw = ctx.measureText(text).width;
+            const pr = 14;
+            ctx.fillStyle = 'rgba(0,0,0,0.7)';
+            ctx.beginPath();
+            ctx.roundRect(W/2 - tw/2 - pr, cy - 19, tw + pr*2, 38, 10);
+            ctx.fill();
+            ctx.fillStyle = color;
+            ctx.fillText(text, W/2, cy);
+            ctx.restore();
+        }
+
+        // --- Goal pill ---
+        if (goalTimer > 0) {
+            const alpha = Math.min(1, goalTimer / 15);
+            drawPill('⚽  GOAL!', H/2 - 28, '#facc15', alpha);
+            if (goalTimer > 0) goalOverlayTimer--;
+        }
+
+        // --- Set-piece pill (throw-in / corner / goal kick) ---
+        if (evLabel && evAlpha > 0) {
+            drawPill(evLabel, H/2 + 12, '#34d399', evAlpha);
+        }
+
+        // --- Game-over panel (redrawn here if gameOverState is set) ---
+        if (gameOverState) drawGameOverPanel();
+    }
+
+    function drawPlayer(px, py, team, role, stamina, state, isCarrier) {
+        const color = team === 'team1' ? '#3b82f6' : '#ef4444';
+        const glow  = team === 'team1' ? 'rgba(59,130,246,0.5)' : 'rgba(239,68,68,0.5)';
+        const r = 14;
+
+        // Ground shadow
+        ctx.save(); ctx.globalAlpha = 0.28;
+        ctx.beginPath(); ctx.ellipse(px, py+r*0.5, r*0.8, r*0.26, 0, 0, Math.PI*2);
+        ctx.fillStyle = '#000'; ctx.fill(); ctx.restore();
+
+        // Carrier ring
+        if (isCarrier) {
+            ctx.save(); ctx.globalAlpha = 0.9;
+            ctx.strokeStyle = '#fff'; ctx.lineWidth = 2.5;
+            ctx.beginPath(); ctx.arc(px, py, r+6, 0, Math.PI*2); ctx.stroke();
+            ctx.restore();
+        }
+
+        // Glow
+        ctx.save(); ctx.globalAlpha = 0.5;
+        ctx.strokeStyle = glow; ctx.lineWidth = 4;
+        ctx.beginPath(); ctx.arc(px, py, r, 0, Math.PI*2); ctx.stroke(); ctx.restore();
+
+        // Body
+        ctx.beginPath(); ctx.arc(px, py, r, 0, Math.PI*2);
+        ctx.fillStyle = color; ctx.fill();
+
+        // Inner ring
+        ctx.save(); ctx.globalAlpha = 0.4;
+        ctx.strokeStyle = '#fff'; ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.arc(px, py, 9, 0, Math.PI*2); ctx.stroke(); ctx.restore();
+
+        // Role letter
+        const L = {goalkeeper:'G',defender:'D',midfielder:'M',forward:'F'}[role]||'?';
+        ctx.save();
+        ctx.fillStyle='#fff'; ctx.font='bold 10px Inter,sans-serif';
+        ctx.textAlign='center'; ctx.textBaseline='middle';
+        ctx.fillText(L, px, py); ctx.restore();
+
+        // Stamina bar
+        const bw=24, bh=4, bx_=px-bw/2, by_=py+r+3;
+        ctx.fillStyle='rgba(0,0,0,0.5)'; ctx.fillRect(bx_,by_,bw,bh);
+        const pct = Math.max(0,Math.min(100,stamina||0))/100;
+        ctx.fillStyle = pct>0.3?'#22c55e':'#f59e0b';
+        ctx.fillRect(bx_,by_,bw*pct,bh);
+
+    }
+
+    // Click on canvas — handle Rematch button inside game-over panel
+    canvas.addEventListener('click', function(e) {
+        if (!gameOverState) return;
+        const rect = canvas.getBoundingClientRect();
+        const mx = (e.clientX - rect.left) * (canvas.width  / rect.width);
+        const my = (e.clientY - rect.top)  * (canvas.height / rect.height);
+        const W = canvas.width, H = canvas.height;
+        const pw = 440, ph = 264;
+        const py_ = (H - ph) / 2;
+        const bw = 160, bh = 40;
+        const btnX = W / 2 - bw / 2, btnY = py_ + ph - 54;
+        if (mx >= btnX && mx <= btnX + bw && my >= btnY && my <= btnY + bh) {
+            gameOverState = null;
+            initSimulation();
+        }
+    });
+
+    // Initial field preview
+    (function() {
+        ctx.fillStyle='#1b4332'; ctx.fillRect(0,0,canvas.width,canvas.height);
+        ctx.fillStyle='rgba(255,255,255,0.25)';
+        ctx.font='bold 18px Inter,sans-serif';
+        ctx.textAlign='center'; ctx.textBaseline='middle';
+        ctx.fillText('Press Kick Off to start', canvas.width/2, canvas.height/2);
+    })();
+</script>
+</body>
+</html>
