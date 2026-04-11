@@ -93,7 +93,7 @@ canvas { image-rendering:crisp-edges; }
 <div class="w-full max-w-5xl flex items-start gap-4">
   <div class="flex-1 bg-neutral-900 rounded-xl border border-neutral-800 p-4">
     <div class="text-[10px] uppercase tracking-widest text-neutral-500 font-bold mb-3">Match Stats</div>
-    <div class="grid grid-cols-3 gap-3">
+    <div class="grid grid-cols-4 gap-3">
       <div class="flex flex-col items-center gap-1 bg-neutral-800/60 rounded-lg p-3">
         <span class="text-lg">🎯</span>
         <span class="text-[10px] uppercase tracking-widest text-neutral-400 font-bold">Shots</span>
@@ -108,6 +108,11 @@ canvas { image-rendering:crisp-edges; }
         <span class="text-lg">💪</span>
         <span class="text-[10px] uppercase tracking-widest text-neutral-400 font-bold">Tackles</span>
         <span id="stat-tackles" class="text-2xl font-black font-mono">0</span>
+      </div>
+      <div class="flex flex-col items-center gap-1 bg-neutral-800/60 rounded-lg p-3">
+        <span class="text-lg">🧤</span>
+        <span class="text-[10px] uppercase tracking-widest text-neutral-400 font-bold">Saves</span>
+        <span id="stat-saves" class="text-2xl font-black font-mono">0</span>
       </div>
     </div>
   </div>
@@ -139,41 +144,32 @@ canvas { image-rendering:crisp-edges; }
     :- use_module(library(random)).
 
     % ------------------------------------------------------------------
-    % 1. KNOWLEDGE REPRESENTATION — static field facts
+    % 1. KNOWLEDGE REPRESENTATION
     % ------------------------------------------------------------------
-    field(size(100, 50)).
+    goal_target(team1, 100, 25).
+    goal_target(team2, 0,   25).
 
-    % Each team's attack direction
-    goal_target(team1, 100, 25).   % team1 shoots toward x=100
-    goal_target(team2, 0,   25).   % team2 shoots toward x=0
-
-    % Shooting range thresholds
     in_shoot_range(team1, X) :- X >= 68.
     in_shoot_range(team2, X) :- X =< 32.
 
-    % Formation home positions — staggered Y so passes are naturally diagonal
-    home_pos(team1, forward,    62, 20).
-    home_pos(team1, midfielder, 40, 31).
-    home_pos(team1, defender,   22, 18).
-    home_pos(team2, forward,    38, 30).
-    home_pos(team2, midfielder, 60, 19).
-    home_pos(team2, defender,   78, 32).
+    % Cooldown ticks after a kick before anyone can pick up the ball.
+    pass_cooldown(12).
+    shot_cooldown(20).
 
     % ------------------------------------------------------------------
     % 2. DYNAMIC STATE
     % ------------------------------------------------------------------
-    :- dynamic(ball/2).        % ball(pos(X,Y), vel(VX,VY))
-    :- dynamic(player/5).      % player(Team, Role, pos(X,Y), Stamina, State)
-    :- dynamic(score/2).       % score(Team, Goals)
+    :- dynamic(ball/2).         % ball(pos(X,Y), vel(VX,VY))
+    :- dynamic(player/5).       % player(Team, Role, pos(X,Y), Stamina, State)
+    :- dynamic(score/2).
     :- dynamic(game_over/1).
     :- dynamic(tick/1).
     :- dynamic(paused_until/1).
-    :- dynamic(stat/2).        % stat(shots|passes|tackles, N)
-    :- dynamic(last_touch/1).  % last_touch(Team) — who last touched the ball
-    :- dynamic(restart/3).     % restart(Team, X, Y) — pending set-piece restart
-    :- dynamic(pending_reset/2). % pending_reset(KickOffTeam, AtTick) — delayed goal reset
-    :- dynamic(set_piece/1).   % set_piece(throw_in|corner_kick|goal_kick)
-    :- dynamic(kicked_this_tick/0). % flag: at most one kick per tick
+    :- dynamic(pending_reset/2).
+    :- dynamic(possession/1).   % possession(Team) — who last had the ball
+    :- dynamic(carrier/2).      % carrier(Team, Role) — who physically holds ball
+    :- dynamic(cooldown/1).     % cooldown(N) — ticks until loose-ball pickup allowed
+    :- dynamic(stat/2).         % stat(shots|passes|tackles|saves, N)
 
     % ------------------------------------------------------------------
     % 3. RESET / INITIALISATION
@@ -182,34 +178,36 @@ canvas { image-rendering:crisp-edges; }
         retractall(ball(_,_)), retractall(player(_,_,_,_,_)),
         retractall(score(_,_)), retractall(game_over(_)),
         retractall(tick(_)),   retractall(paused_until(_)),
-        retractall(stat(_,_)),
-        retractall(last_touch(_)), retractall(restart(_,_,_)),
-        retractall(pending_reset(_,_)), retractall(set_piece(_)),
-        assertz(tick(0)), assertz(paused_until(0)),
+        retractall(pending_reset(_,_)),
+        retractall(possession(_)), retractall(carrier(_,_)),
+        retractall(cooldown(_)),   retractall(stat(_,_)),
+        assertz(tick(0)), assertz(paused_until(0)), assertz(cooldown(0)),
         assertz(ball(pos(50,25), vel(0,0))),
         assertz(score(team1, 0)), assertz(score(team2, 0)),
-        assertz(stat(shots, 0)), assertz(stat(passes, 0)), assertz(stat(tackles, 0)),
-        assertz(last_touch(team1)),
+        assertz(stat(shots, 0)), assertz(stat(passes, 0)),
+        assertz(stat(tackles, 0)), assertz(stat(saves, 0)),
         reset_positions(team1).
 
     reset_positions(KickTeam) :-
         retractall(player(_,_,_,_,_)),
-        % Team 1 — attacks right
+        retractall(carrier(_,_)), retractall(possession(_)),
+        retractall(cooldown(_)), assertz(cooldown(0)),
+        assertz(possession(KickTeam)),
+        assertz(carrier(KickTeam, forward)),
         (KickTeam == team1 ->
             assertz(player(team1, forward, pos(50,25), 100, idle))
         ;   assertz(player(team1, forward, pos(38,22), 100, idle))
         ),
         assertz(player(team1, midfielder, pos(32,28), 100, idle)),
         assertz(player(team1, defender,   pos(18,22), 100, idle)),
-        assertz(player(team1, goalkeeper, pos(5, 25), 100, idle)),
-        % Team 2 — attacks left
+        assertz(player(team1, goalkeeper, pos(5, 25),  100, idle)),
         (KickTeam == team2 ->
             assertz(player(team2, forward, pos(50,25), 100, idle))
         ;   assertz(player(team2, forward, pos(62,28), 100, idle))
         ),
         assertz(player(team2, midfielder, pos(68,22), 100, idle)),
         assertz(player(team2, defender,   pos(82,28), 100, idle)),
-        assertz(player(team2, goalkeeper, pos(95,25), 100, idle)).
+        assertz(player(team2, goalkeeper, pos(95,25),  100, idle)).
 
     % ------------------------------------------------------------------
     % 4. HELPERS
@@ -223,7 +221,7 @@ canvas { image-rendering:crisp-edges; }
     pdist(X1, Y1, X2, Y2, D) :-
         D is sqrt((X2-X1)*(X2-X1) + (Y2-Y1)*(Y2-Y1)).
 
-    % Which non-GK player on Team is nearest the ball right now?
+    % Nearest non-GK teammate to ball
     nearest_to_ball(Team, Role) :-
         ball(pos(BX,BY), _),
         findall(D-R,
@@ -233,364 +231,445 @@ canvas { image-rendering:crisp-edges; }
         Ds \= [],
         keysort(Ds, [_-Role|_]).
 
-    % 2D separation — push away from nearest neighbour in any direction (no oscillation)
-    sep(PX, PY, DX, DY) :-
-        findall(D-pos(OX,OY),
+    % Vertical-only separation — pushes player away from nearest neighbour in Y
+    sep(PX, PY, SDX, SDY) :-
+        findall(D-oy(OY),
             (player(_,_,pos(OX,OY),_,_),
-             D is sqrt((OX-PX)*(OX-PX)+(OY-PY)*(OY-PY)),
-             D > 0.05, D < 6),
+             (OX \= PX ; OY \= PY),
+             D is sqrt((OX-PX)*(OX-PX)+(OY-PY)*(OY-PY)), D < 8),
             Ds),
         (Ds \= [] ->
-            keysort(Ds, [MD-pos(MX,MY)|_]),
-            (MD < 5 ->
-                Scale is (5 - MD) / 5 * 0.35,
-                AwayX is PX - MX, AwayY is PY - MY,
-                AwayD is sqrt(AwayX*AwayX + AwayY*AwayY + 0.001),
-                DX is AwayX / AwayD * Scale,
-                DY is AwayY / AwayD * Scale
-            ; DX=0, DY=0)
-        ;   DX=0, DY=0).
+            keysort(Ds, [MD-oy(MY)|_]),
+            (MD < 5 -> (PY > MY -> SDY = 0.5 ; SDY = -0.5), SDX = 0
+                     ; SDX = 0, SDY = 0)
+        ;   SDX = 0, SDY = 0).
 
-    % Stamina: drains any time a player moves, faster when dribbling or kicking.
-    % Threshold 0.15 ensures even half-speed movements drain stamina visibly.
-    upd_stam(S, Spd, NS, St, NSt) :-
-        (St == exhausted ->
-            (S > 30 -> NSt = idle ; NSt = exhausted),
-            NS is min(100, S + 1.2)
-        ;
-            (S < 3 -> NSt = exhausted ; NSt = St),
-            (Spd > 0.15 -> NS is max(0, S - 0.2)   % drain whenever actually moving
-                         ; NS is min(100, S + 0.4)) % recover only when nearly stopped
-        ).
+    % Stamina: simple drain/recover, no exhausted state
+    upd_stam(S, Spd, NS, _St, idle) :-
+        (Spd > 0.5 -> NS is max(0, S - 0.15) ; NS is min(100, S + 0.2)).
 
     bump(Name) :-
         stat(Name, V), NV is V+1,
         retract(stat(Name, V)), assertz(stat(Name, NV)).
 
-    % Move Team/Role one step toward (TX,TY) at speed Spd, with separation
+    % Move player one step toward (TX,TY) with vertical separation
     step_toward(Team, Role, PX, PY, TX, TY, S, St, Spd) :-
-        normalize(TX-PX, TY-PY, NX, NY),
-        sep(PX, PY, SDX, SDY),
-        NX2 is PX + (NX + SDX*0.25)*Spd,
-        NY2 is PY + (NY*0.9 + SDY*0.25)*Spd,
-        limit(NX2, 1, 99, CX), limit(NY2, 1, 49, CY),
-        upd_stam(S, Spd, NS, St, NSt),
-        retract(player(Team, Role, _, _, _)),
-        assertz(player(Team, Role, pos(CX,CY), NS, NSt)).
+        Dist is sqrt((TX-PX)*(TX-PX) + (TY-PY)*(TY-PY)),
+        (Dist < 1.2 ->
+            upd_stam(S, 0, NS, St, NSt),
+            retract(player(Team,Role,_,_,_)),
+            assertz(player(Team,Role,pos(PX,PY),NS,NSt))
+        ;
+            normalize(TX-PX, TY-PY, NX, NY),
+            sep(PX, PY, SDX, SDY),
+            NX2 is PX + (NX + SDX*0.2)*Spd,
+            NY2 is PY + (NY*0.9 + SDY*0.2)*Spd,
+            limit(NX2, 1, 99, CX), limit(NY2, 1, 49, CY),
+            upd_stam(S, Spd, NS, St, NSt),
+            retract(player(Team,Role,_,_,_)),
+            assertz(player(Team,Role,pos(CX,CY),NS,NSt))
+        ).
 
     % ------------------------------------------------------------------
-    % 5. AI BEHAVIORS — proximity-based kicking
-    %
-    % No carrier concept. Any player within D < 4 of the ball can kick it
-    % (subject to kicked_this_tick — at most one kick per tick globally).
-    % Players chase the ball when nearest on their team, otherwise take up
-    % tactical positions. GK kicks loose balls within D < 3.5.
+    % 5. STRIPS-STYLE ACTIONS
+    % ------------------------------------------------------------------
+
+    % SHOOT — high-velocity kick toward goal; sets shot cooldown
+    do_shoot(T, Role, PX, PY, S) :-
+        carrier(T, Role), !,
+        goal_target(T, GX, _),
+        random_between(17, 33, TY),
+        normalize(GX-PX, TY-PY, NX, NY),
+        VX is NX*4.5, VY is NY*4.5,
+        shot_cooldown(CD),
+        retractall(carrier(_,_)),
+        retractall(cooldown(_)), assertz(cooldown(CD)),
+        retract(ball(_,_)), assertz(ball(pos(PX,PY), vel(VX,VY))),
+        NS is max(0, S-4),
+        retract(player(T,Role,_,_,_)), assertz(player(T,Role,pos(PX,PY),NS,shooting)),
+        bump(shots).
+
+    % PASS — kick ball to teammate; sets pass cooldown
+    do_pass(T, From, To, PX, PY, S) :-
+        carrier(T, From), !,
+        player(T, To, pos(TX,TY), _, _), From \= To,
+        normalize(TX-PX, TY-PY, NX, NY),
+        Dist is sqrt((TX-PX)*(TX-PX)+(TY-PY)*(TY-PY)),
+        PassSpd is min(3.5, max(1.8, Dist*0.10)),
+        VX is NX*PassSpd, VY is NY*PassSpd,
+        pass_cooldown(CD),
+        retractall(carrier(_,_)),
+        retractall(cooldown(_)), assertz(cooldown(CD)),
+        retract(ball(_,_)), assertz(ball(pos(PX,PY), vel(VX,VY))),
+        NS is max(0, S-2),
+        retract(player(T,From,_,_,_)), assertz(player(T,From,pos(PX,PY),NS,passing)),
+        bump(passes).
+
+    % DRIBBLE — carrier moves with ball (ball teleports to player each tick)
+    do_dribble(T, Role, PX, PY, S, St, Spd, Tick) :-
+        carrier(T, Role), !,
+        goal_target(T, GX, GY),
+        normalize(GX-PX, GY-PY, NX, NY),
+        sep(PX, PY, SDX, SDY),
+        Wander is sin(Tick*0.045 + PY*0.13) * 0.09,
+        NX2 is PX + (NX + SDX*0.18)*Spd*0.68,
+        NY2 is PY + (NY + SDY*0.18 + Wander)*Spd*0.68,
+        limit(NX2, 1, 99, CX), limit(NY2, 1, 49, CY),
+        upd_stam(S, Spd, NS, St, _),
+        retract(ball(_,_)), assertz(ball(pos(CX,CY), vel(0,0))),
+        retract(player(T,Role,_,_,_)), assertz(player(T,Role,pos(CX,CY),NS,dribbling)).
+
+    % DRIBBLE toward a custom target (used by midfielder to advance to centre, not goal)
+    do_dribble_to(T, Role, PX, PY, TX, TY, S, St, Spd, Tick) :-
+        carrier(T, Role), !,
+        normalize(TX-PX, TY-PY, NX, NY),
+        sep(PX, PY, SDX, SDY),
+        Wander is sin(Tick*0.045 + PY*0.13) * 0.09,
+        NX2 is PX + (NX + SDX*0.18)*Spd*0.68,
+        NY2 is PY + (NY + SDY*0.18 + Wander)*Spd*0.68,
+        limit(NX2, 1, 99, CX), limit(NY2, 1, 49, CY),
+        upd_stam(S, Spd, NS, St, _),
+        retract(ball(_,_)), assertz(ball(pos(CX,CY), vel(0,0))),
+        retract(player(T,Role,_,_,_)), assertz(player(T,Role,pos(CX,CY),NS,dribbling)).
+
+    % TACKLE — attempt to win ball from opponent carrier (55% success if close)
+    do_tackle(T, Role, PX, PY, S, St, Spd, OX, OY) :-
+        pdist(PX, PY, OX, OY, D),
+        (D < 3.2 ->
+            random(R),
+            (R < 0.55 ->
+                retractall(carrier(_,_)), assertz(carrier(T, Role)),
+                retractall(possession(_)), assertz(possession(T)),
+                retractall(cooldown(_)), assertz(cooldown(0)),
+                retract(ball(_,_)), assertz(ball(pos(PX,PY), vel(0,0))),
+                retract(player(T,Role,_,_,_)), assertz(player(T,Role,pos(PX,PY),S,tackling)),
+                bump(tackles)
+            ;
+                step_toward(T, Role, PX, PY, OX, OY, S, St, Spd*0.8)
+            )
+        ;
+            step_toward(T, Role, PX, PY, OX, OY, S, St, Spd)
+        ).
+
+    % ------------------------------------------------------------------
+    % 6. AI BEHAVIORS
+    % Decision tree per role:
+    %   I hold ball → shoot/dribble/pass
+    %   Teammate holds ball → make run
+    %   Opponent holds ball → press/tackle
+    %   Loose ball → chase if nearest, else hold zone
     % ------------------------------------------------------------------
 
     % ---- FORWARD ----
     ai_behavior(T, forward) :-
         player(T, forward, pos(PX,PY), S, St),
-        ball(pos(BX,BY), _),
-        (St == exhausted -> Spd = 0.25 ; Spd = 0.88),
-        D is sqrt((BX-PX)*(BX-PX)+(BY-PY)*(BY-PY)),
+        tick(Tick), Spd = 0.88,
+        (T == team1 -> Opp = team2, FwdZoneX = 72, HomeX = 62
+        ;              Opp = team1, FwdZoneX = 28, HomeX = 38),
 
-        (D < 4, St \= exhausted, \+ kicked_this_tick, in_shoot_range(T, BX), BY > 8, BY < 42 ->
-            % In shoot range — fire at goal
-            goal_target(T, GX, _),
-            random(17, 33, TY),
-            normalize(GX-BX, TY-BY, NX, NY),
-            VX is NX*3.2, VY is NY*3.2,
-            retract(ball(_,_)), assertz(ball(pos(BX,BY), vel(VX,VY))),
-            assertz(kicked_this_tick),
-            NS is max(0, S-8),
-            retractall(last_touch(_)), assertz(last_touch(T)),
-            bump(shots),
-            retract(player(T,forward,_,_,_)), assertz(player(T,forward,pos(PX,PY),NS,shooting))
+        (carrier(T, forward) ->
+            % Shoot if in range, else dribble toward goal
+            (in_shoot_range(T, PX) ->
+                do_shoot(T, forward, PX, PY, S)
+            ;
+                do_dribble(T, forward, PX, PY, S, St, Spd, Tick)
+            )
 
-        ; D < 4, St \= exhausted, \+ kicked_this_tick ->
-            % Not in shoot range — nudge ball forward (dribble-style)
-            goal_target(T, GX, GY),
-            normalize(GX-BX, GY-BY, NX, NY),
-            VX is NX*1.1, VY is NY*1.1,
-            retract(ball(_,_)), assertz(ball(pos(BX,BY), vel(VX,VY))),
-            assertz(kicked_this_tick),
-            retractall(last_touch(_)), assertz(last_touch(T)),
-            NS is max(0, S-3),
-            retract(player(T,forward,_,_,_)), assertz(player(T,forward,pos(PX,PY),NS,dribbling))
+        ; carrier(T, _) ->
+            % Teammate has ball — make an attacking run into the box
+            (PY < 25 -> ZoneY = 20 ; ZoneY = 30),
+            step_toward(T, forward, PX, PY, FwdZoneX, ZoneY, S, St, Spd*0.65)
 
-        ; nearest_to_ball(T, forward) ->
-            % Nearest on team to ball — chase it
-            step_toward(T, forward, PX, PY, BX, BY, S, St, Spd)
+        ; carrier(Opp, OppRole),
+          player(Opp, OppRole, pos(CX,CY), _, _) ->
+            % Opponent has ball — press
+            step_toward(T, forward, PX, PY, CX, CY, S, St, Spd*0.9)
 
         ;
-            % Support run: push into attacking space ahead
-            goal_target(T, GX, _),
-            (PY < 25 -> RunY = 19 ; RunY = 31),
-            (T == team1 -> RunX is min(GX-8, PX+14) ; RunX is max(GX+8, PX-14)),
-            step_toward(T, forward, PX, PY, RunX, RunY, S, St, Spd*0.7)
+            % Loose ball
+            ball(pos(BX,BY), _),
+            (nearest_to_ball(T, forward) ->
+                step_toward(T, forward, PX, PY, BX, BY, S, St, Spd)
+            ;
+                step_toward(T, forward, PX, PY, HomeX, 25, S, St, Spd*0.45)
+            )
         ).
 
     % ---- MIDFIELDER ----
     ai_behavior(T, midfielder) :-
         player(T, midfielder, pos(PX,PY), S, St),
-        ball(pos(BX,BY), _),
-        (St == exhausted -> Spd = 0.2 ; Spd = 0.78),
-        goal_target(T, GX, _),
-        D is sqrt((BX-PX)*(BX-PX)+(BY-PY)*(BY-PY)),
+        tick(Tick), Spd = 0.78,
+        (T == team1 -> Opp = team2, HomeX = 40, DefX = 28, ChaseLimit = 52
+        ;              Opp = team1, HomeX = 60, DefX = 72, ChaseLimit = 48),
 
-        (D < 4, St \= exhausted, \+ kicked_this_tick ->
-            % In range — pass toward forward's position
-            (player(T, forward, pos(FX,FY), _, _) ->
-                random(-3, 4, RX), random(-3, 4, RY),
-                AimX is FX + RX,
-                AimY is max(5, min(45, FY + RY)),
-                normalize(AimX-BX, AimY-BY, NX, NY),
-                AimDist is sqrt((AimX-BX)*(AimX-BX)+(AimY-BY)*(AimY-BY)),
-                PassSpd is min(2.2, max(0.7, AimDist * 0.058)),
-                VX is NX*PassSpd, VY is NY*PassSpd
+        (carrier(T, midfielder) ->
+            % Pass to forward if they're upfield, else advance with ball
+            (player(T, forward, pos(FX,_), _, _),
+             (T == team1 -> FX >= 56 ; FX =< 44) ->
+                do_pass(T, midfielder, forward, PX, PY, S)
+            ; (T == team1, PX < 48 ; T == team2, PX > 52) ->
+                % Own half — advance ball to centre, don't charge the goal
+                (T == team1 -> AdvX = 52 ; AdvX = 48),
+                do_dribble_to(T, midfielder, PX, PY, AdvX, 25, S, St, Spd, Tick)
             ;
-                % No forward visible — kick toward goal
-                random(18, 32, TY),
-                normalize(GX-BX, TY-BY, NX, NY),
-                VX is NX*2.0, VY is NY*2.0
-            ),
-            retract(ball(_,_)), assertz(ball(pos(BX,BY), vel(VX,VY))),
-            assertz(kicked_this_tick),
-            NS is max(0, S-5),
-            retractall(last_touch(_)), assertz(last_touch(T)),
-            bump(passes),
-            retract(player(T,midfielder,_,_,_)), assertz(player(T,midfielder,pos(PX,PY),NS,passing))
+                % Already in attacking half — dribble toward goal
+                do_dribble(T, midfielder, PX, PY, S, St, Spd, Tick)
+            )
 
-        ; nearest_to_ball(T, midfielder) ->
-            % Nearest on team to ball — chase it
-            step_toward(T, midfielder, PX, PY, BX, BY, S, St, Spd)
+        ; carrier(T, _) ->
+            % Teammate dribbling — hold midfield support position
+            step_toward(T, midfielder, PX, PY, HomeX, 25, S, St, Spd*0.55)
+
+        ; carrier(Opp, OppRole),
+          player(Opp, OppRole, pos(CX,CY), _, _) ->
+            % Opponent has ball — tackle if in own half, else drop back
+            ball(pos(BX,_), _),
+            ((T == team1, BX =< ChaseLimit ; T == team2, BX >= ChaseLimit) ->
+                do_tackle(T, midfielder, PX, PY, S, St, Spd*0.85, CX, CY)
+            ;
+                step_toward(T, midfielder, PX, PY, DefX, 25, S, St, Spd*0.6)
+            )
 
         ;
-            % Drift into open lane between ball and own forward
-            (T==team1 -> LX is min(BX+10, GX-18) ; LX is max(BX-10, GX+18)),
-            SY is (BY + 25) * 0.5,
-            step_toward(T, midfielder, PX, PY, LX, SY, S, St, Spd*0.65)
+            % Loose ball — chase if nearest and in own half, else hold
+            ball(pos(BX,BY), _),
+            (nearest_to_ball(T, midfielder),
+             (T == team1 -> BX =< ChaseLimit ; BX >= ChaseLimit) ->
+                step_toward(T, midfielder, PX, PY, BX, BY, S, St, Spd)
+            ;
+                step_toward(T, midfielder, PX, PY, HomeX, 25, S, St, Spd*0.45)
+            )
         ).
 
     % ---- DEFENDER ----
     ai_behavior(T, defender) :-
         player(T, defender, pos(PX,PY), S, St),
-        ball(pos(BX,BY), _),
-        (T == team1 -> Opp = team2 ; Opp = team1),
-        (T == team1 -> OwnGoalX = 0 ; OwnGoalX = 100),
-        (St == exhausted -> Spd = 0.2 ; Spd = 0.72),
-        D is sqrt((BX-PX)*(BX-PX)+(BY-PY)*(BY-PY)),
+        Spd = 0.74,
+        (T == team1 -> Opp = team2, OwnGoalX = 0, HomeX = 22, DefLimit = 54
+        ;              Opp = team1, OwnGoalX = 100, HomeX = 78, DefLimit = 46),
 
-        (D < 4, \+ kicked_this_tick ->
-            % In range — clear toward own team's midfield
-            goal_target(T, GX, _),
-            random(10, 40, TY),
-            normalize(GX-BX, TY-BY, NX, NY),
-            VX is NX*2.2, VY is NY*2.2,
-            retract(ball(_,_)), assertz(ball(pos(BX,BY), vel(VX,VY))),
-            assertz(kicked_this_tick),
-            NS is max(0, S-6),
-            retractall(last_touch(_)), assertz(last_touch(T)),
-            bump(tackles),
-            retract(player(T,defender,_,_,_)), assertz(player(T,defender,pos(PX,PY),NS,tackling))
+        (carrier(T, defender) ->
+            % Clear up to midfielder
+            do_pass(T, defender, midfielder, PX, PY, S)
 
-        ; nearest_to_ball(T, defender) ->
-            % Nearest on team to ball — chase
-            step_toward(T, defender, PX, PY, BX, BY, S, St, Spd)
+        ; carrier(T, _) ->
+            % Own team dribbling — hold defensive line
+            step_toward(T, defender, PX, PY, HomeX, 25, S, St, Spd*0.4)
+
+        ; carrier(Opp, OppRole),
+          player(Opp, OppRole, pos(CX,CY), _, _) ->
+            % Opponent in dangerous zone — tackle; else mark their forward
+            ((T == team1, CX =< DefLimit ; T == team2, CX >= DefLimit) ->
+                do_tackle(T, defender, PX, PY, S, St, Spd, CX, CY)
+            ;
+                (player(Opp, forward, pos(OFX,OFY), _, _) ->
+                    MarkX is OFX * 0.3 + OwnGoalX * 0.7,
+                    MarkY is OFY * 0.5 + 25 * 0.5,
+                    step_toward(T, defender, PX, PY, MarkX, MarkY, S, St, Spd*0.5)
+                ;
+                    step_toward(T, defender, PX, PY, HomeX, 25, S, St, Spd*0.45)
+                )
+            )
 
         ;
-            % Mark the opponent forward — stand between them and own goal
-            (player(Opp, forward, pos(OFX,OFY), _, _) ->
-                MarkX is (OFX + OwnGoalX) * 0.5,
-                step_toward(T, defender, PX, PY, MarkX, OFY, S, St, Spd*0.55)
+            % Loose ball — chase only in own half
+            ball(pos(BX,BY), _),
+            ((T == team1, BX =< 52 ; T == team2, BX >= 48),
+             nearest_to_ball(T, defender) ->
+                step_toward(T, defender, PX, PY, BX, BY, S, St, Spd)
             ;
-                home_pos(T, defender, HX, HY),
-                step_toward(T, defender, PX, PY, HX, HY, S, St, Spd*0.4)
+                (player(Opp, forward, pos(OFX,OFY), _, _) ->
+                    MarkX is OFX * 0.3 + OwnGoalX * 0.7,
+                    MarkY is OFY * 0.5 + 25 * 0.5,
+                    step_toward(T, defender, PX, PY, MarkX, MarkY, S, St, Spd*0.5)
+                ;
+                    step_toward(T, defender, PX, PY, HomeX, 25, S, St, Spd*0.4)
+                )
             )
         ).
 
     % ---- GOALKEEPER ----
     ai_behavior(T, goalkeeper) :-
-        player(T, goalkeeper, pos(PX,PY), _, _),
-        ball(pos(BX,BY), _),
-        (T == team1 -> GKX = 5 ; GKX = 95),
-        limit(BY, 17, 33, TY),
-        DistBall is sqrt((BX-PX)*(BX-PX)+(BY-PY)*(BY-PY)),
+        player(T, goalkeeper, pos(PX,PY), S, _),
+        ball(pos(BX,BY), vel(BVX,BVY)),
+        (T == team1 -> GKX = 5, GKMinX = 2, GKMaxX = 14
+        ;              GKX = 95, GKMinX = 86, GKMaxX = 98),
 
-        (DistBall < 3.5, \+ kicked_this_tick ->
-            % Ball within reach — distribute toward midfield
-            goal_target(T, GX, _),
-            random(15, 35, KTY),
-            normalize(GX-BX, KTY-BY, KNX, KNY),
-            KVX is KNX*2.8, KVY is KNY*2.8,
-            assertz(kicked_this_tick),
-            retractall(last_touch(_)), assertz(last_touch(T)),
-            retract(ball(_,_)), assertz(ball(pos(BX,BY), vel(KVX,KVY))),
-            retract(player(T,goalkeeper,_,_,_)),
-            assertz(player(T,goalkeeper,pos(PX,PY),100,saving))
-
+        (carrier(T, goalkeeper) ->
+            do_pass(T, goalkeeper, defender, PX, PY, S)
         ;
-            % Track ball Y, stay near own goal line
-            normalize(GKX-PX, TY-PY, NX, NY),
-            NX2 is PX + NX*0.5, NY2 is PY + NY*0.5,
-            (T==team1 -> limit(NX2,1,12,CX) ; limit(NX2,88,99,CX)),
-            limit(NY2,17,33,CY),
+            BallSpd is sqrt(BVX*BVX + BVY*BVY),
+            ((BallSpd > 1.5, T == team1, BVX < -0.5) ->
+                TicksA is min(10, (BX - GKX) / (-BVX + 0.001)),
+                PredY is BY + BVY * TicksA, limit(PredY, 14, 36, TargY)
+            ; (BallSpd > 1.5, T == team2, BVX > 0.5) ->
+                TicksA is min(10, (GKX - BX) / (BVX + 0.001)),
+                PredY is BY + BVY * TicksA, limit(PredY, 14, 36, TargY)
+            ;
+                limit(BY, 15, 35, TargY)
+            ),
+            normalize(GKX-PX, TargY-PY, NX, NY),
+            NX2 is PX + NX*0.4, NY2 is PY + NY*0.4,
+            limit(NX2, GKMinX, GKMaxX, CX), limit(NY2, 13, 37, CY),
             retract(player(T,goalkeeper,_,_,_)),
             assertz(player(T,goalkeeper,pos(CX,CY),100,idle))
         ).
 
     % ------------------------------------------------------------------
-    % 6. BALL PHYSICS — velocity + friction + out-of-play detection
-    % Out-of-play: top/bottom = throw-in, left/right non-goal = corner/goal kick.
+    % 7. BALL PHYSICS
     % ------------------------------------------------------------------
+    update_ball :-
+        ball(pos(_,_), vel(0,0)), !.   % Ball at rest (dribbling) — no update
     update_ball :-
         ball(pos(X,Y), vel(VX,VY)),
         NX is X + VX, NY is Y + VY,
+        % Out-of-bounds: stop ball and clear carrier
         (NY < 0 ->
-            % Top wall — throw-in for opponent of last toucher
-            ClampX is max(1, min(99, NX)),
-            retract(ball(_,_)), assertz(ball(pos(ClampX, 1), vel(0,0))),
-            trigger_throw_in(ClampX, 1)
+            limit(NX,1,99,CX),
+            retract(ball(_,_)), assertz(ball(pos(CX,1), vel(0,0))),
+            retractall(carrier(_,_)), retractall(cooldown(_)), assertz(cooldown(0))
         ; NY > 50 ->
-            % Bottom wall — throw-in
-            ClampX is max(1, min(99, NX)),
-            retract(ball(_,_)), assertz(ball(pos(ClampX, 49), vel(0,0))),
-            trigger_throw_in(ClampX, 49)
-        ; (NX < 0, (NY =< 16 ; NY >= 34)) ->
-            % Left wall, non-goal — corner or goal kick
-            ClampY is max(1, min(49, NY)),
-            retract(ball(_,_)), assertz(ball(pos(1, ClampY), vel(0,0))),
-            trigger_set_piece(left, ClampY)
-        ; (NX > 100, (NY =< 16 ; NY >= 34)) ->
-            % Right wall, non-goal — corner or goal kick
-            ClampY is max(1, min(49, NY)),
-            retract(ball(_,_)), assertz(ball(pos(99, ClampY), vel(0,0))),
-            trigger_set_piece(right, ClampY)
+            limit(NX,1,99,CX),
+            retract(ball(_,_)), assertz(ball(pos(CX,49), vel(0,0))),
+            retractall(carrier(_,_)), retractall(cooldown(_)), assertz(cooldown(0))
+        ; NX < 0, (NY =< 16 ; NY >= 34) ->
+            limit(NY,1,49,CY),
+            retract(ball(_,_)), assertz(ball(pos(1,CY), vel(0,0))),
+            retractall(carrier(_,_)), retractall(cooldown(_)), assertz(cooldown(0))
+        ; NX > 100, (NY =< 16 ; NY >= 34) ->
+            limit(NY,1,49,CY),
+            retract(ball(_,_)), assertz(ball(pos(99,CY), vel(0,0))),
+            retractall(carrier(_,_)), retractall(cooldown(_)), assertz(cooldown(0))
         ;
-            % Normal in-play — apply friction
-            NVX is VX * 0.965,
-            NVY is VY * 0.965,
-            limit(NX, -2, 102, CX), limit(NY, 1, 49, CY),
-            retract(ball(_,_)), assertz(ball(pos(CX,CY), vel(NVX,NVY)))
-        ).
-
-    % Throw-in: ball out top/bottom — give to opponent of last toucher
-    % Place restart slightly inside field so first kick isn't from the edge
-    trigger_throw_in(X, BallY) :-
-        (last_touch(LT) -> (LT == team1 -> OT = team2 ; OT = team1) ; OT = team2),
-        SafeY is (BallY < 25 -> 5 ; 45),
-        tick(Cur), PauseEnd is Cur + 30,
-        retractall(paused_until(_)), assertz(paused_until(PauseEnd)),
-        retractall(set_piece(_)), assertz(set_piece(throw_in)),
-        retractall(restart(_,_,_)), assertz(restart(OT, X, SafeY)).
-
-    % Set piece: ball out at left or right wall (non-goal area)
-    % Left wall = team1's defensive end; right wall = team2's defensive end.
-    % Defending team last touched → corner kick for attacking team.
-    % Attacking team last touched → goal kick for defending team.
-    trigger_set_piece(Side, Y) :-
-        (last_touch(LT) -> LT2 = LT ; LT2 = team1),
-        (Side == left -> DefTeam = team1, AtkTeam = team2
-        ;                DefTeam = team2, AtkTeam = team1),
-        tick(Cur), PauseEnd is Cur + 35,
-        retractall(paused_until(_)), assertz(paused_until(PauseEnd)),
-        (LT2 == DefTeam ->
-            % Corner kick for attacking team — keep away from wall edges
-            (Side == left -> CornerX = 6 ; CornerX = 94),
-            (Y < 25 -> CornerY = 6 ; CornerY = 44),
-            retractall(set_piece(_)), assertz(set_piece(corner_kick)),
-            retractall(restart(_,_,_)), assertz(restart(AtkTeam, CornerX, CornerY))
-        ;
-            % Goal kick for defending team — ball to GK position
-            (Side == left -> GKX = 5 ; GKX = 95),
-            retractall(set_piece(_)), assertz(set_piece(goal_kick)),
-            retractall(restart(_,_,_)), assertz(restart(DefTeam, GKX, 25))
+            Speed is sqrt(VX*VX + VY*VY),
+            (Speed > 2.0 -> Fric = 0.935 ; Fric = 0.962),
+            NVX is VX*Fric, NVY is VY*Fric,
+            (abs(NVX) < 0.05, abs(NVY) < 0.05 -> FVX=0, FVY=0 ; FVX=NVX, FVY=NVY),
+            limit(NX,0,100,CX), limit(NY,1,49,CY),
+            retract(ball(_,_)), assertz(ball(pos(CX,CY), vel(FVX,FVY)))
         ).
 
     % ------------------------------------------------------------------
-    % 7. GOAL DETECTION & SCORING
+    % 8. COOLDOWN TICK + LOOSE-BALL PICKUP
+    % ------------------------------------------------------------------
+    tick_cooldown :-
+        cooldown(N), N > 0, !,
+        N1 is N-1, retractall(cooldown(_)), assertz(cooldown(N1)).
+    tick_cooldown.
+
+    % After cooldown expires, nearest player within 2.8 units picks up the ball.
+    try_pickup :-
+        carrier(_, _), !.           % Someone already holds it
+    try_pickup :-
+        cooldown(N), N > 0, !.      % Still in cooldown
+    try_pickup :-
+        ball(pos(BX,BY), _),
+        findall(D-p(T,R,PX,PY),
+            (player(T, R, pos(PX,PY), _, _),
+             D is sqrt((BX-PX)*(BX-PX)+(BY-PY)*(BY-PY)),
+             D < 2.8),
+            All),
+        All \= [], !,
+        keysort(All, [_-p(PT,PR,PPX,PPY)|_]),
+        retractall(carrier(_,_)), assertz(carrier(PT, PR)),
+        retractall(possession(_)), assertz(possession(PT)),
+        retractall(cooldown(_)),   assertz(cooldown(0)),
+        retract(ball(_,_)), assertz(ball(pos(PPX,PPY), vel(0,0))).
+    try_pickup.
+
+    % ------------------------------------------------------------------
+    % 9. GOAL DETECTION + SAVE MECHANIC
     % ------------------------------------------------------------------
     process_goals :-
         ball(pos(X,Y), _),
-        (X > 99, Y > 16, Y < 34 -> score_goal(team1)
-        ; X <  1, Y > 16, Y < 34 -> score_goal(team2)
-        ; true
+        (X > 99, Y > 16, Y < 34 -> attempt_save(team2, team1)
+        ; X <  1, Y > 16, Y < 34 -> attempt_save(team1, team2)
+        ; true).
+
+    attempt_save(DefTeam, ScoringTeam) :-
+        ball(pos(BX,BY), vel(VX,VY)),
+        player(DefTeam, goalkeeper, pos(GKX,GKY), _, _),
+        GKDist is sqrt((BX-GKX)*(BX-GKX)+(BY-GKY)*(BY-GKY)),
+        BallSpd is sqrt(VX*VX+VY*VY),
+        DistFactor is max(0.0, 1.0 - GKDist/16.0),
+        SpdPenalty is min(0.55, BallSpd*0.07),
+        SaveProb is max(0.04, DistFactor*0.82 - SpdPenalty),
+        random(R),
+        (R < SaveProb ->
+            random(Rj), Jitter is (Rj-0.5)*1.0,
+            NVX is -VX*0.42, NVY is Jitter*0.5,
+            retract(ball(_,_)), assertz(ball(pos(BX,BY), vel(NVX,NVY))),
+            retractall(carrier(_,_)), assertz(carrier(DefTeam, goalkeeper)),
+            retractall(possession(_)), assertz(possession(DefTeam)),
+            retractall(cooldown(_)), assertz(cooldown(0)),
+            bump(saves)
+        ;
+            score_goal(ScoringTeam)
         ).
 
     score_goal(T) :-
         score(T, S), NS is S+1,
         retract(score(T,S)), assertz(score(T,NS)),
+        retractall(carrier(_,_)), retractall(cooldown(_)), assertz(cooldown(0)),
         (NS >= 3 ->
             assertz(game_over(T))
         ;
             (T == team1 -> NextKO = team2 ; NextKO = team1),
             tick(Cur),
-            % Ball stays in the goal for 90 ticks, then resets at tick Cur+90
-            % Full pause lasts until Cur+120 (30 extra ticks at centre)
-            GoalPause is Cur + 120,
-            ResetAt   is Cur + 90,
-            retractall(paused_until(_)),   assertz(paused_until(GoalPause)),
+            PauseEnd is Cur + 120, ResetAt is Cur + 90,
+            retractall(paused_until(_)),    assertz(paused_until(PauseEnd)),
             retractall(pending_reset(_,_)), assertz(pending_reset(NextKO, ResetAt)),
-            retractall(restart(_,_,_)),
-            % Freeze ball at current goal position (do NOT move to centre yet)
-            ball(pos(BX,BY), _),
-            retract(ball(_,_)), assertz(ball(pos(BX,BY), vel(0,0)))
+            retract(ball(_,_)), assertz(ball(pos(50,25), vel(0,0)))
         ).
 
     % ------------------------------------------------------------------
-    % 8. MAIN STEP — one game tick
+    % 10. MAIN STEP
     % ------------------------------------------------------------------
     step :-
         \+ game_over(_),
         tick(T), NT is T+1,
         retract(tick(T)), assertz(tick(NT)),
-        % Clear per-tick kick flag
-        retractall(kicked_this_tick),
-        % Check if delayed goal reset is due (ball moves to centre mid-pause)
-        (pending_reset(NextKO, ResetTick), NT >= ResetTick ->
+        (pending_reset(NextKO, ResetAt), NT >= ResetAt ->
             retractall(pending_reset(_,_)),
-            retractall(ball(_,_)), assertz(ball(pos(50,25), vel(0,0))),
             reset_positions(NextKO)
         ; true),
         (paused_until(P), NT < P ->
-            true   % paused — no AI
+            true
         ;
-            % Apply any pending set-piece / throw-in restart
-            (restart(RTeam, RX, RY) ->
-                retractall(restart(_,_,_)),
-                retractall(set_piece(_)),
-                retractall(last_touch(_)), assertz(last_touch(RTeam)),
-                retract(ball(_,_)), assertz(ball(pos(RX, RY), vel(0,0)))
-            ; true),
-            % Randomise which team acts first (prevents systematic bias)
-            random(R),
-            (R > 0.5 ->
-                (ai_behavior(team1,forward), ai_behavior(team1,midfielder),
-                 ai_behavior(team1,defender), ai_behavior(team1,goalkeeper),
-                 ai_behavior(team2,forward), ai_behavior(team2,midfielder),
-                 ai_behavior(team2,defender), ai_behavior(team2,goalkeeper))
-            ;
-                (ai_behavior(team2,forward), ai_behavior(team2,midfielder),
-                 ai_behavior(team2,defender), ai_behavior(team2,goalkeeper),
-                 ai_behavior(team1,forward), ai_behavior(team1,midfielder),
-                 ai_behavior(team1,defender), ai_behavior(team1,goalkeeper))
-            ),
+            run_ai,
             update_ball,
+            tick_cooldown,
+            try_pickup,
             process_goals
         ).
 
+    run_ai :-
+        random(R),
+        (R > 0.5 ->
+            (ai_behavior(team1,forward), ai_behavior(team1,midfielder),
+             ai_behavior(team1,defender), ai_behavior(team1,goalkeeper),
+             ai_behavior(team2,forward), ai_behavior(team2,midfielder),
+             ai_behavior(team2,defender), ai_behavior(team2,goalkeeper))
+        ;
+            (ai_behavior(team2,forward), ai_behavior(team2,midfielder),
+             ai_behavior(team2,defender), ai_behavior(team2,goalkeeper),
+             ai_behavior(team1,forward), ai_behavior(team1,midfielder),
+             ai_behavior(team1,defender), ai_behavior(team1,goalkeeper))
+        ).
+
     % ------------------------------------------------------------------
-    % 9. STATE QUERY
+    % 11. STATE QUERY
     % ------------------------------------------------------------------
     get_all_state(BX, BY, Players, Score1, Score2, OT, OR, EvLabel) :-
         ball(pos(BX,BY), _),
         findall(p(T,R,X,Y,S,St), player(T,R,pos(X,Y),S,St), Players),
         score(team1, Score1), score(team2, Score2),
-        OT = none, OR = none,
-        (set_piece(EvLabel) -> true ; EvLabel = none).
+        (carrier(OT, OR) -> true ; OT = none, OR = none),
+        EvLabel = none.
 
-    get_stats(Shots, Passes, Tackles) :-
-        stat(shots, Shots), stat(passes, Passes), stat(tackles, Tackles).
+    get_stats(Shots, Passes, Tackles, Saves) :-
+        stat(shots, Shots), stat(passes, Passes),
+        stat(tackles, Tackles), stat(saves, Saves).
 </script>
 
 <!-- ================================================================
@@ -613,6 +692,10 @@ canvas { image-rendering:crisp-edges; }
     let fieldLabel = '', fieldLabelAlpha = 0, prevFieldLabel = '';
     let goalOverlayTimer = 0;
     let gameOverState = null;   // set when match ends, drives canvas result panel
+    let prevSaves = 0;
+    let ballTrail = [];         // stores last N ball positions for trail effect
+    let prevBallSpd = 0;        // for detecting shots in the log
+    const shootingPlayers = new Set();  // track who was already logged as shooting
 
     // ----------------------------------------------------------------
     // Init / Kick Off
@@ -635,10 +718,11 @@ canvas { image-rendering:crisp-edges; }
         badge.innerText = 'Predicted: ' + (pred === 'team1' ? 'Strikers' : 'Titans');
         badge.classList.remove('hidden');
         ['score-blue','score-red'].forEach(id => document.getElementById(id).innerText = '0');
-        ['stat-shots','stat-passes','stat-tackles'].forEach(id => document.getElementById(id).innerText = '0');
+        ['stat-shots','stat-passes','stat-tackles','stat-saves'].forEach(id => document.getElementById(id).innerText = '0');
         document.getElementById('action-log').innerHTML = '';
         prevS1 = 0; prevS2 = 0; prevOT = 'none'; prevOR = 'none';
         fieldLabel = ''; fieldLabelAlpha = 0; prevFieldLabel = ''; goalOverlayTimer = 0;
+        prevSaves = 0; ballTrail = []; prevBallSpd = 0; shootingPlayers.clear();
 
         session = pl.create(3000);
         session.consult(document.getElementById('prolog-logic').textContent, {
@@ -677,7 +761,8 @@ canvas { image-rendering:crisp-edges; }
                             if (!ans) handleGameOver();
                             updateStateAndDraw();
                         },
-                        error: () => { handleGameOver(); updateStateAndDraw(); }
+                        fail:    () => { handleGameOver(); updateStateAndDraw(); },
+                        error:   () => { handleGameOver(); updateStateAndDraw(); }
                     });
                 },
                 error: () => { handleGameOver(); updateStateAndDraw(); }
@@ -698,6 +783,7 @@ canvas { image-rendering:crisp-edges; }
         session.query('get_all_state(BX,BY,Players,S1,S2,OT,OR,EL).', {
             success: () => {
                 session.answer({
+                    fail:    scheduleNext,
                     success: (ans) => {
                         if (!ans) { scheduleNext(); return; }
 
@@ -738,45 +824,71 @@ canvas { image-rendering:crisp-edges; }
                             prevS1 = s1; prevS2 = s2;
                         }
 
-                        // Possession events
+                        // Possession / carrier events
                         if (ot !== prevOT || or_ !== prevOR) {
                             if (ot !== 'none') {
                                 const tn = ot === 'team1' ? 'Strikers' : 'Titans';
-                                const logType = or_ === 'forward' || or_ === 'midfielder' ? 'carry' : 'defend';
-                                addLog(`🏃 ${tn} ${or_}`, logType);
-                            } else if (prevOT !== 'none') {
-                                addLog('💨 Ball released!', 'shot');
+                                if (or_ === 'goalkeeper') {
+                                    addLog(`🧤 ${tn} GK distributes`, 'save');
+                                } else {
+                                    const logType = or_ === 'defender' ? 'defend' : 'carry';
+                                    const roleLabel = {forward:'FWD', midfielder:'MID', defender:'DEF'}[or_] || or_;
+                                    addLog(`🏃 ${tn} ${roleLabel}`, logType);
+                                }
                             }
                             prevOT = ot; prevOR = or_;
                         }
 
                         // Parse player list
                         const players = [];
+                        const currentShooters = new Set();
                         let list = ans.lookup('Players');
                         while (list && list.indicator === './2') {
                             const p = list.args[0];
+                            const pState = termId(p.args[5]);
+                            const pTeam  = p.args[0].id;
+                            const pRole  = p.args[1].id;
+                            if (pState === 'shooting') {
+                                const key = pTeam + ':' + pRole;
+                                currentShooters.add(key);
+                                if (!shootingPlayers.has(key)) {
+                                    const tn = pTeam === 'team1' ? 'Strikers' : 'Titans';
+                                    const rl = {forward:'FWD',midfielder:'MID'}[pRole] || pRole;
+                                    addLog(`🎯 ${tn} ${rl} SHOOTS!`, 'shot');
+                                }
+                            }
                             players.push({
-                                team:    p.args[0].id,
-                                role:    p.args[1].id,
+                                team:    pTeam,
+                                role:    pRole,
                                 x:       p.args[2].value,
                                 y:       p.args[3].value,
                                 stamina: p.args[4].value,
-                                state:   termId(p.args[5])
+                                state:   pState
                             });
                             list = list.args[1];
                         }
+                        // Update shooting tracker — clear players no longer shooting
+                        shootingPlayers.clear();
+                        currentShooters.forEach(k => shootingPlayers.add(k));
 
                         draw(bx, by, players, ot, or_, fieldLabel, fieldLabelAlpha, goalOverlayTimer);
 
                         // Stats
-                        session.query('get_stats(Shots,Passes,Tackles).', {
+                        session.query('get_stats(Shots,Passes,Tackles,Saves).', {
                             success: () => {
                                 session.answer({
+                                    fail:    scheduleNext,
                                     success: (m) => {
                                         if (m) {
                                             document.getElementById('stat-shots').innerText   = m.lookup('Shots').value;
                                             document.getElementById('stat-passes').innerText  = m.lookup('Passes').value;
                                             document.getElementById('stat-tackles').innerText = m.lookup('Tackles').value;
+                                            const sv = m.lookup('Saves').value;
+                                            document.getElementById('stat-saves').innerText  = sv;
+                                            if (sv > prevSaves) {
+                                                addLog('🧤 SAVE!', 'save');
+                                                prevSaves = sv;
+                                            }
                                         }
                                         scheduleNext();
                                     },
@@ -808,18 +920,34 @@ canvas { image-rendering:crisp-edges; }
     function handleGameOver() {
         if (gameOverState) return;   // already handled
         const w = prevS1 >= 3 ? 'team1' : prevS2 >= 3 ? 'team2' : null;
-        if (!w) return;              // scores haven't reached 3 yet (step failed for other reason)
+        if (!w) return;              // scores haven't reached 3 yet
         running = false;
         if (requestRef) cancelAnimationFrame(requestRef);
         document.getElementById('status-text').innerText = 'Full Time';
         document.getElementById('start-btn').innerText = 'Kick Off';
-        const ok          = userPrediction === w;
-        const winnerName  = w === 'team1' ? 'Strikers' : 'Titans';
-        const predName    = userPrediction === 'team1' ? 'Strikers'
-                          : userPrediction === 'team2' ? 'Titans' : '—';
+
+        const ok         = userPrediction === w;
+        const winnerName = w === 'team1' ? 'Strikers' : 'Titans';
+        const predName   = userPrediction === 'team1' ? 'Strikers'
+                         : userPrediction === 'team2' ? 'Titans' : '—';
         gameOverState = { winner: w, winnerName, s1: prevS1, s2: prevS2, predName, ok };
         addLog(w === 'team1' ? '🏆 Strikers Win!' : '🏆 Titans Win!', 'goal');
-        // drawGameOverPanel() will be called inside the next updateStateAndDraw → draw()
+
+        // Populate and show the HTML overlay (reliable — sits above canvas in DOM)
+        const teamColor = w === 'team1' ? '#60a5fa' : '#f87171';
+        const el = document.getElementById('winner-text');
+        el.textContent = winnerName.toUpperCase() + ' WIN!';
+        el.style.color = teamColor;
+
+        document.getElementById('final-score-blue').textContent = prevS1;
+        document.getElementById('final-score-red').textContent  = prevS2;
+        document.getElementById('pred-picked').textContent = 'You predicted: ' + predName.toUpperCase();
+
+        const pr = document.getElementById('pred-result');
+        pr.textContent  = ok ? '✓  CORRECT PREDICTION!' : '✗  WRONG PREDICTION';
+        pr.style.color  = ok ? '#34d399' : '#f87171';
+
+        document.getElementById('winner-overlay').classList.remove('hidden');
     }
 
     // ----------------------------------------------------------------
@@ -844,61 +972,78 @@ canvas { image-rendering:crisp-edges; }
         const gos = gameOverState;
         if (!gos) return;
         const W = canvas.width, H = canvas.height;
-        const teamColor = gos.winner === 'team1' ? '#60a5fa' : '#f87171';
-        const pw = 440, ph = 264;
+        const teamColor  = gos.winner === 'team1' ? '#60a5fa' : '#f87171';
+        const resultColor = gos.ok ? '#34d399' : '#f87171';
+        const pw = 460, ph = 290;
         const px = (W - pw) / 2, py = (H - ph) / 2;
         const cx = W / 2;
 
         ctx.save();
 
+        // Dim field behind panel
+        ctx.globalAlpha = 0.65;
+        ctx.fillStyle = '#000';
+        ctx.fillRect(0, 0, W, H);
+
         // Panel background
-        ctx.globalAlpha = 0.97;
+        ctx.globalAlpha = 1;
         ctx.fillStyle = '#0d1117';
-        canvasRRect(px, py, pw, ph, 16);
+        canvasRRect(px, py, pw, ph, 18);
         ctx.fill();
 
-        // Colored border
-        ctx.globalAlpha = 0.8;
+        // Winner-colored border (thicker)
         ctx.strokeStyle = teamColor;
-        ctx.lineWidth = 2;
-        canvasRRect(px, py, pw, ph, 16);
+        ctx.lineWidth = 3;
+        canvasRRect(px, py, pw, ph, 18);
         ctx.stroke();
 
-        ctx.globalAlpha = 1;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
 
-        // FULL TIME
+        // FULL TIME label
         ctx.fillStyle = '#6b7280';
         ctx.font = 'bold 11px Inter,sans-serif';
         ctx.fillText('F U L L   T I M E', cx, py + 28);
 
         // Winner name
         ctx.fillStyle = teamColor;
-        ctx.font = 'bold italic 42px Inter,sans-serif';
-        ctx.fillText(gos.winnerName.toUpperCase() + ' WIN!', cx, py + 80);
+        ctx.font = 'bold italic 44px Inter,sans-serif';
+        ctx.fillText(gos.winnerName.toUpperCase() + ' WIN!', cx, py + 78);
 
         // Score
         ctx.fillStyle = '#ffffff';
-        ctx.font = 'bold 50px JetBrains Mono,monospace';
-        ctx.fillText(gos.s1 + '  \u2013  ' + gos.s2, cx, py + 136);
+        ctx.font = 'bold 52px JetBrains Mono,monospace';
+        ctx.fillText(gos.s1 + '  \u2013  ' + gos.s2, cx, py + 134);
 
         // Divider
         ctx.fillStyle = '#374151';
-        ctx.fillRect(cx - 100, py + 158, 200, 1);
+        ctx.fillRect(cx - 110, py + 158, 220, 1);
 
-        // Prediction line
+        // Prediction pill background
+        ctx.globalAlpha = gos.ok ? 0.15 : 0.12;
+        ctx.fillStyle = resultColor;
+        canvasRRect(px + 40, py + 167, pw - 80, 70, 12);
+        ctx.fill();
+        ctx.globalAlpha = 1;
+
+        // Prediction pill border
+        ctx.strokeStyle = resultColor;
+        ctx.lineWidth = 1.5;
+        canvasRRect(px + 40, py + 167, pw - 80, 70, 12);
+        ctx.stroke();
+
+        // "YOU PREDICTED" label
         ctx.fillStyle = '#9ca3af';
-        ctx.font = 'bold 12px Inter,sans-serif';
-        ctx.fillText('YOU PREDICTED: ' + gos.predName.toUpperCase(), cx, py + 178);
+        ctx.font = 'bold 11px Inter,sans-serif';
+        ctx.fillText('YOU PREDICTED:  ' + gos.predName.toUpperCase(), cx, py + 186);
 
-        // Prediction result
-        ctx.fillStyle = gos.ok ? '#34d399' : '#f87171';
-        ctx.font = 'bold 17px Inter,sans-serif';
-        ctx.fillText(gos.ok ? '\u2713  CORRECT PREDICTION!' : '\u2717  WRONG PREDICTION', cx, py + 204);
+        // Correct / Wrong result — larger and bold
+        ctx.fillStyle = resultColor;
+        ctx.font = 'bold 20px Inter,sans-serif';
+        ctx.fillText(gos.ok ? '\u2713  CORRECT PREDICTION!' : '\u2717  WRONG PREDICTION', cx, py + 213);
 
         // Rematch button
-        const bw = 160, bh = 40, bx2 = cx - bw / 2, by2 = py + ph - 54;
+        const bw = 170, bh = 42, bx2 = cx - bw / 2, by2 = py + ph - 52;
         ctx.fillStyle = '#facc15';
         canvasRRect(bx2, by2, bw, bh, 10);
         ctx.fill();
@@ -924,6 +1069,7 @@ canvas { image-rendering:crisp-edges; }
         else if (type === 'carry')  el.style.color = '#60a5fa';
         else if (type === 'defend') el.style.color = '#a78bfa';
         else if (type === 'event')  el.style.color = '#34d399';
+        else if (type === 'save')   el.style.color = '#34d399';
         else                        el.style.color = '#d1d5db';
         const log = document.getElementById('action-log');
         log.insertBefore(el, log.firstChild);
@@ -997,6 +1143,28 @@ canvas { image-rendering:crisp-edges; }
                        p.team === ownerTeam && p.role === ownerRole);
         });
 
+        // --- Ball trail (motion blur effect) ---
+        ballTrail.push({x: bx, y: by});
+        if (ballTrail.length > 10) ballTrail.shift();
+        const trailSpd = ballTrail.length > 1
+            ? Math.hypot(bx - ballTrail[ballTrail.length-2].x, by - ballTrail[ballTrail.length-2].y)
+            : 0;
+        if (trailSpd > 0.8) {
+            ballTrail.forEach((pos, i) => {
+                const a = (i / ballTrail.length) * 0.35;
+                const r = 3 + (i / ballTrail.length) * 4;
+                ctx.save();
+                ctx.globalAlpha = a;
+                ctx.beginPath();
+                ctx.arc(pos.x * S, pos.y * S, r, 0, Math.PI * 2);
+                ctx.fillStyle = '#fff';
+                ctx.fill();
+                ctx.restore();
+            });
+        } else {
+            ballTrail = [];
+        }
+
         // --- Ball ---
         ctx.save();
         ctx.shadowColor = 'rgba(255,255,255,0.9)'; ctx.shadowBlur = 18;
@@ -1036,8 +1204,16 @@ canvas { image-rendering:crisp-edges; }
             drawPill(evLabel, H/2 + 12, '#34d399', evAlpha);
         }
 
-        // --- Game-over panel (redrawn here if gameOverState is set) ---
-        if (gameOverState) drawGameOverPanel();
+        // --- Legend (bottom-right corner) ---
+        ctx.save();
+        ctx.font = '9px Inter,sans-serif';
+        ctx.fillStyle = 'rgba(255,255,255,0.35)';
+        ctx.textAlign = 'right';
+        ctx.textBaseline = 'bottom';
+        ctx.fillText('● White ring = ball carrier', W - 12, H - 4);
+        ctx.restore();
+
+        // Game-over panel drawn on canvas is replaced by the HTML #winner-overlay
     }
 
     function drawPlayer(px, py, team, role, stamina, state, isCarrier) {
@@ -1050,11 +1226,11 @@ canvas { image-rendering:crisp-edges; }
         ctx.beginPath(); ctx.ellipse(px, py+r*0.5, r*0.8, r*0.26, 0, 0, Math.PI*2);
         ctx.fillStyle = '#000'; ctx.fill(); ctx.restore();
 
-        // Carrier ring
+        // White ring — only when this player is the carrier (dribbling / last kicked)
         if (isCarrier) {
             ctx.save(); ctx.globalAlpha = 0.9;
             ctx.strokeStyle = '#fff'; ctx.lineWidth = 2.5;
-            ctx.beginPath(); ctx.arc(px, py, r+6, 0, Math.PI*2); ctx.stroke();
+            ctx.beginPath(); ctx.arc(px, py, r+5, 0, Math.PI*2); ctx.stroke();
             ctx.restore();
         }
 
@@ -1065,7 +1241,8 @@ canvas { image-rendering:crisp-edges; }
 
         // Body
         ctx.beginPath(); ctx.arc(px, py, r, 0, Math.PI*2);
-        ctx.fillStyle = color; ctx.fill();
+        ctx.fillStyle = color;
+        ctx.fill();
 
         // Inner ring
         ctx.save(); ctx.globalAlpha = 0.4;
@@ -1079,13 +1256,12 @@ canvas { image-rendering:crisp-edges; }
         ctx.textAlign='center'; ctx.textBaseline='middle';
         ctx.fillText(L, px, py); ctx.restore();
 
-        // Stamina bar
+        // Stamina bar (below player)
         const bw=24, bh=4, bx_=px-bw/2, by_=py+r+3;
         ctx.fillStyle='rgba(0,0,0,0.5)'; ctx.fillRect(bx_,by_,bw,bh);
         const pct = Math.max(0,Math.min(100,stamina||0))/100;
-        ctx.fillStyle = pct>0.3?'#22c55e':'#f59e0b';
+        ctx.fillStyle = pct>0.5 ? '#22c55e' : pct>0.25 ? '#f59e0b' : '#ef4444';
         ctx.fillRect(bx_,by_,bw*pct,bh);
-
     }
 
     // Click on canvas — handle Rematch button inside game-over panel
@@ -1095,10 +1271,10 @@ canvas { image-rendering:crisp-edges; }
         const mx = (e.clientX - rect.left) * (canvas.width  / rect.width);
         const my = (e.clientY - rect.top)  * (canvas.height / rect.height);
         const W = canvas.width, H = canvas.height;
-        const pw = 440, ph = 264;
+        const pw = 460, ph = 290;
         const py_ = (H - ph) / 2;
-        const bw = 160, bh = 40;
-        const btnX = W / 2 - bw / 2, btnY = py_ + ph - 54;
+        const bw = 170, bh = 42;
+        const btnX = W / 2 - bw / 2, btnY = py_ + ph - 52;
         if (mx >= btnX && mx <= btnX + bw && my >= btnY && my <= btnY + bh) {
             gameOverState = null;
             initSimulation();
