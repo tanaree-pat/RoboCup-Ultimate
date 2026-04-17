@@ -131,8 +131,8 @@ canvas { image-rendering:crisp-edges; }
        2. Dynamic state declarations
        3. Reset / initialisation
        4. Helper predicates
-       5. STRIPS-style action predicates
-       6. FSM / AI behaviors per role
+       5. Action predicates
+       6. AI behaviors per role
        7. Ball physics
        8. Loose-ball pickup (possession-aware)
        9. Goal detection & scoring
@@ -149,8 +149,8 @@ canvas { image-rendering:crisp-edges; }
     goal_target(team1, 100, 25).
     goal_target(team2, 0,   25).
 
-    in_shoot_range(team1, X) :- X >= 68.
-    in_shoot_range(team2, X) :- X =< 32.
+    in_shoot_range(team1, X) :- X >= 80.
+    in_shoot_range(team2, X) :- X =< 20.
 
     pass_cooldown(12).
     shot_cooldown(20).
@@ -261,10 +261,10 @@ canvas { image-rendering:crisp-edges; }
     upd_stam(S, Spd, NS, State, OutState) :-
         % 1. Calculate stamina delta based on exertion level
         (Spd >= 0.6 -> 
-            % SPRINTING (Dribbling, GK rushing, chasing a loose ball)
+            % SPRINTING
             Delta = -0.5
         ; Spd >= 0.4 -> 
-            % JOGGING (Midfielders tracking the ball, Defenders marking)
+            % JOGGING
             Delta = -0.3
         ; 
             % RESTING / WALKING
@@ -277,8 +277,7 @@ canvas { image-rendering:crisp-edges; }
         NS = ClampS,
         
         % 3. Handle Exhaustion State
-        % If stamina hits 0, they are "gassed" and must recover to at least 30 
-        % before the 'exhausted' tag is removed.
+        % If stamina hits 0, they are exhausted and must recover to at least 30 before the 'exhausted' tag is removed.
         (NS =:= 0 -> 
             OutState = exhausted
         ; NS >= 30, State == exhausted -> 
@@ -309,7 +308,7 @@ canvas { image-rendering:crisp-edges; }
         ).
 
     % ------------------------------------------------------------------
-    % 5. STRIPS-STYLE ACTIONS
+    % 5. ACTIONS
     % ------------------------------------------------------------------
     do_shoot(T, Role, PX, PY, S) :-
         carrier(T, Role), !,
@@ -341,91 +340,27 @@ canvas { image-rendering:crisp-edges; }
         retract(player(T,From,_,_,_)), assertz(player(T,From,pos(PX,PY),NS,passing)),
         bump(passes).
 
-    % DRIBBLE — carrier moves with ball, actively avoiding tackles (Juking)
     do_dribble(T, Role, PX, PY, S, St, Spd, Tick) :-
         carrier(T, Role), !,
         goal_target(T, GX, GY),
-        
-        % 1. Get base vector toward goal
         normalize(GX-PX, GY-PY, BaseNX, BaseNY),
-        
-        % 2. Find threatening opponents
-        (T == team1 -> Opp = team2 ; Opp = team1),
-        findall(D-pos(OX,OY,Dot),
-            (player(Opp, _, pos(OX,OY), _, _),
-             D is sqrt((OX-PX)*(OX-PX) + (OY-PY)*(OY-PY)),
-             D < 15,
-             normalize(OX-PX, OY-PY, OppNX, OppNY),
-             Dot is (BaseNX * OppNX) + (BaseNY * OppNY),
-             Dot > 0.1),
-            Threats),
-        keysort(Threats, SortedThreats),
-        
-        % 3. STABLE EVASION (No more jiggling)
-        (SortedThreats = [MinD-pos(OX, OY, Dot)|_] ->
-            normalize(OX-PX, OY-PY, OppNX, OppNY),
-            
-            % Create a perpendicular vector to the goal direction
-            PerpX is -BaseNY, 
-            PerpY is BaseNX,
-            
-            % Check which side of the dribbler the opponent is leaning toward
-            Side is (OppNX * PerpX) + (OppNY * PerpY),
-            
-            % Commit to cutting to the OPPOSITE side
-            (Side >= 0 -> 
-                CutNX is -PerpX, CutNY is -PerpY 
-            ;   
-                CutNX is PerpX, CutNY is PerpY
-            ),
-            
-            JukePower is (8.0 / (MinD + 1.0)) * Dot,
-            RawNX is BaseNX + (CutNX * JukePower),
-            RawNY is BaseNY + (CutNY * JukePower)
-        ;
-            RawNX = BaseNX, RawNY = BaseNY
-        ),
-        
-        % 4. Softened Teammate Repulsion
-        findall(TD-pos(TX,TY),
-            (player(T, _, pos(TX,TY), _, _), (TX \= PX ; TY \= PY),
-             TD is sqrt((TX-PX)*(TX-PX) + (TY-PY)*(TY-PY)), TD < 5),
-            Teammates),
-        keysort(Teammates, SortedMates),
-        (SortedMates = [MinTD-pos(TX,TY)|_] ->
-            normalize(PX-TX, PY-TY, RepNX, RepNY),
-            RepPower is 2.0 / (MinTD + 1.0), % Weakened to stop erratic bounces
-            RawNX2 is RawNX + (RepNX * RepPower),
-            RawNY2 is RawNY + (RepNY * RepPower)
-        ;
-            RawNX2 = RawNX, RawNY2 = RawNY
-        ),
-        
-        normalize(RawNX2, RawNY2, NX, NY),
-        
-        Wander is sin(Tick*0.06 + PY*0.1) * 0.15,
-        NX2 is PX + NX * Spd * 0.85,
-        NY2 is PY + (NY + Wander) * Spd * 0.85,
-        limit(NX2, 1, 99, CX), limit(NY2, 1, 49, CY),
-        
-        upd_stam(S, Spd, NS, St, _),
-        retract(ball(_,_)), assertz(ball(pos(CX,CY), vel(0,0))),
-        retract(player(T,Role,_,_,_)), assertz(player(T,Role,pos(CX,CY),NS,dribbling)).
+        execute_dribble_vector(T, Role, PX, PY, BaseNX, BaseNY, S, St, Spd, Tick).
 
-    % DRIBBLE TO — (Same stable logic for Midfielders advancing)
     do_dribble_to(T, Role, PX, PY, TargX, TargY, S, St, Spd, Tick) :-
         carrier(T, Role), !,
-        
         normalize(TargX-PX, TargY-PY, BaseNX, BaseNY),
-        
+        execute_dribble_vector(T, Role, PX, PY, BaseNX, BaseNY, S, St, Spd, Tick).
+
+    % Shared helper for evasion
+    execute_dribble_vector(T, Role, PX, PY, BaseNX, BaseNY, S, St, Spd, Tick) :-
         (T == team1 -> Opp = team2 ; Opp = team1),
+        
+        % Threat evasion
         findall(D-pos(OX,OY,Dot),
             (player(Opp, _, pos(OX,OY), _, _),
-             D is sqrt((OX-PX)*(OX-PX) + (OY-PY)*(OY-PY)),
-             D < 15,
+             D is sqrt((OX-PX)*(OX-PX) + (OY-PY)*(OY-PY)), D < 15,
              normalize(OX-PX, OY-PY, OppNX, OppNY),
-             Dot is (BaseNX * OppNX) + (BaseNY * OppNY),
-             Dot > 0.1),
+             Dot is (BaseNX * OppNX) + (BaseNY * OppNY), Dot > 0.1),
             Threats),
         keysort(Threats, SortedThreats),
         
@@ -433,9 +368,7 @@ canvas { image-rendering:crisp-edges; }
             normalize(OX-PX, OY-PY, OppNX, OppNY),
             PerpX is -BaseNY, PerpY is BaseNX,
             Side is (OppNX * PerpX) + (OppNY * PerpY),
-            
             (Side >= 0 -> CutNX is -PerpX, CutNY is -PerpY ; CutNX is PerpX, CutNY is PerpY),
-            
             JukePower is (8.0 / (MinD + 1.0)) * Dot,
             RawNX is BaseNX + (CutNX * JukePower),
             RawNY is BaseNY + (CutNY * JukePower)
@@ -443,6 +376,7 @@ canvas { image-rendering:crisp-edges; }
             RawNX = BaseNX, RawNY = BaseNY
         ),
         
+        % Teammate repulsion
         findall(TD-pos(TX,TY),
             (player(T, _, pos(TX,TY), _, _), (TX \= PX ; TY \= PY),
              TD is sqrt((TX-PX)*(TX-PX) + (TY-PY)*(TY-PY)), TD < 5),
@@ -457,6 +391,7 @@ canvas { image-rendering:crisp-edges; }
             RawNX2 = RawNX, RawNY2 = RawNY
         ),
         
+        % Apply movement
         normalize(RawNX2, RawNY2, NX, NY),
         Wander is sin(Tick*0.06 + PY*0.1) * 0.15,
         NX2 is PX + NX * Spd * 0.85,
@@ -493,25 +428,30 @@ canvas { image-rendering:crisp-edges; }
     % ---- FORWARD ----
     ai_behavior(T, forward) :-
         player(T, forward, pos(PX,PY), S, St),
-        tick(Tick), Spd = 0.7,
+        tick(Tick), Spd = 0.70,
         (T == team1 -> Opp = team2 ; Opp = team1),
         possession(Poss),
         formation_target(T, forward, Poss, TargetX),
         ball(pos(BX,BY), _),
 
+        % Off-ball Movements
+        (Poss == T -> 
+            RawY is 25 + (BY - 25) * 1.5, limit(RawY, 8, 42, TargetY)
+        ;   
+            TargetY is 25 + (BY - 25) * 0.6
+        ),
+
         (carrier(T, forward) ->
             (in_shoot_range(T, PX) ->
                 do_shoot(T, forward, PX, PY, S)
             ;
+                % FIX: Carrier ignores TargetY and dribbles straight to the Goal
                 do_dribble(T, forward, PX, PY, S, St, Spd, Tick)
             )
         ; carrier(T, _) ->
-            % Teammate has ball: make run
-            (PY < 25 -> ZoneY = 20 ; ZoneY = 30),
-            step_toward(T, forward, PX, PY, TargetX, ZoneY, S, St, Spd*0.65)
-
-        ; carrier(Opp, OppRole),
-          player(Opp, OppRole, pos(CX,CY), _, _) ->
+            % Teammate has ball: make wide run to TargetY
+            step_toward(T, forward, PX, PY, TargetX, TargetY, S, St, Spd*0.65)
+        ; carrier(Opp, OppRole), player(Opp, OppRole, pos(CX,CY), _, _) ->
             % Opponent has ball: press
             step_toward(T, forward, PX, PY, CX, CY, S, St, Spd*0.9)
         ;
@@ -519,8 +459,6 @@ canvas { image-rendering:crisp-edges; }
             (nearest_to_ball(T, forward) ->
                 step_toward(T, forward, PX, PY, BX, BY, S, St, Spd)
             ;
-                % loosely track ball Y for natural shape
-                TargetY is 25 + (BY - 25) * 0.6,
                 step_toward(T, forward, PX, PY, TargetX, TargetY, S, St, Spd*0.45)
             )
         ).
@@ -533,7 +471,13 @@ canvas { image-rendering:crisp-edges; }
         possession(Poss),
         formation_target(T, midfielder, Poss, TargetX),
         ball(pos(BX,BY), _),
-        TargetY is 25 + (BY - 25) * 0.5,
+        
+        % Off-ball Movement
+        (Poss == T -> 
+            RawY is 25 + (25 - BY) * 0.9, limit(RawY, 10, 40, TargetY)
+        ;   
+            TargetY is 25 + (BY - 25) * 0.5
+        ),
 
         (carrier(T, midfielder) ->
             (player(T, forward, pos(FX,_), _, _),
@@ -541,27 +485,24 @@ canvas { image-rendering:crisp-edges; }
                 do_pass(T, midfielder, forward, PX, PY, S)
             ; (T == team1, PX < 48 ; T == team2, PX > 52) ->
                 (T == team1 -> AdvX = 52 ; AdvX = 48),
+                % FIX: Midfielder carries the ball centrally to the center line
                 do_dribble_to(T, midfielder, PX, PY, AdvX, 25, S, St, Spd, Tick)
             ;
+                % FIX: Once over the center line, dribble straight to the goal
                 do_dribble(T, midfielder, PX, PY, S, St, Spd, Tick)
             )
-
         ; carrier(T, _) ->
-            % Teammate dribbling: dynamic support
+            % Teammate dribbling: dynamic wide support
             step_toward(T, midfielder, PX, PY, TargetX, TargetY, S, St, Spd*0.55)
-
-        ; carrier(Opp, OppRole),
-          player(Opp, OppRole, pos(CX,CY), _, _) ->
+        ; carrier(Opp, OppRole), player(Opp, OppRole, pos(CX,CY), _, _) ->
             ((T == team1, BX =< ChaseLimit ; T == team2, BX >= ChaseLimit) ->
                 do_tackle(T, midfielder, PX, PY, S, St, Spd*0.85, CX, CY)
             ;
                 step_toward(T, midfielder, PX, PY, TargetX, TargetY, S, St, Spd*0.6)
             )
-
         ;
             % Loose ball
-            (nearest_to_ball(T, midfielder),
-             (T == team1 -> BX =< ChaseLimit ; BX >= ChaseLimit) ->
+            (nearest_to_ball(T, midfielder), (T == team1 -> BX =< ChaseLimit ; BX >= ChaseLimit) ->
                 step_toward(T, midfielder, PX, PY, BX, BY, S, St, Spd)
             ;
                 step_toward(T, midfielder, PX, PY, TargetX, TargetY, S, St, Spd*0.45)
@@ -621,14 +562,12 @@ canvas { image-rendering:crisp-edges; }
     ai_behavior(T, goalkeeper) :-
         player(T, goalkeeper, pos(PX,PY), S, St),
         
-        % 1. Define Goal boundaries based on Team
         (T == team1 -> 
             Opp = team2, GoalX = 0, MinX = 1, MaxX = 18, StandX = 5
         ;   
             Opp = team1, GoalX = 100, MinX = 82, MaxX = 99, StandX = 95
         ),
         
-        % 2. Action Decision Tree
         (carrier(T, goalkeeper) ->
             % THE GK HAS THE BALL: Distribute it safely
             (player(T, midfielder, pos(_,_), _, _) ->
@@ -645,27 +584,19 @@ canvas { image-rendering:crisp-edges; }
           CX >= MinX, CX =< MaxX, CY >= 10, CY =< 40 ->
             % ENEMY IN THE BOX: Rush them and tackle!
             do_tackle(T, goalkeeper, PX, PY, S, St, 0.85, CX, CY)
-            
         ;
             ball(pos(BX,BY), _),
             (BX >= MinX, BX =< MaxX, BY >= 10, BY =< 40 ->
                 % LOOSE BALL IN THE BOX: Sprint to pick it up
                 step_toward(T, goalkeeper, PX, PY, BX, BY, S, St, 0.85)
             ;
-                % BALL FAR AWAY: Active Off-Ball Tracking!
-                
-                % 1. Mirror the ball's Y position to actively follow the play.
-                % Multiply by 0.45 to scale the movement so they cover the net proportionately.
                 TrackY is 25 + ((BY - 25) * 0.45),
                 
-                % Clamp them strictly between the goalposts
                 limit(TrackY, 17, 33, BaseY),
                 
-                % 2. Idle Shuffle: Add a slight oscillation so they "bounce on their toes"
                 tick(Tick),
                 WanderY is BaseY + sin(Tick * 0.15) * 0.6,
                 
-                % 3. Move smoothly to this tracking position (standing slightly off the line)
                 step_toward(T, goalkeeper, PX, PY, StandX, WanderY, S, St, 0.6)
             )
         ).
@@ -674,25 +605,15 @@ canvas { image-rendering:crisp-edges; }
     % 7. BALL PHYSICS
     % ------------------------------------------------------------------
     update_ball :-
-        ball(pos(_,_), vel(0,0)), !.   
+        ball(pos(_,_), vel(0,0)), !.
     update_ball :-
         ball(pos(X,Y), vel(VX,VY)),
         NX is X + VX, NY is Y + VY,
-        (NY < 0 ->
-            limit(NX,1,99,CX),
-            retract(ball(_,_)), assertz(ball(pos(CX,1), vel(0,0))),
-            retractall(carrier(_,_)), retractall(cooldown(_)), assertz(cooldown(0))
-        ; NY > 50 ->
-            limit(NX,1,99,CX),
-            retract(ball(_,_)), assertz(ball(pos(CX,49), vel(0,0))),
-            retractall(carrier(_,_)), retractall(cooldown(_)), assertz(cooldown(0))
-        ; NX < 0, (NY =< 16 ; NY >= 34) ->
-            limit(NY,1,49,CY),
-            retract(ball(_,_)), assertz(ball(pos(1,CY), vel(0,0))),
-            retractall(carrier(_,_)), retractall(cooldown(_)), assertz(cooldown(0))
-        ; NX > 100, (NY =< 16 ; NY >= 34) ->
-            limit(NY,1,49,CY),
-            retract(ball(_,_)), assertz(ball(pos(99,CY), vel(0,0))),
+        
+        % Single check for all non-goal out-of-bounds scenarios
+        ( (NY < 0 ; NY > 50 ; (NX < 0, (NY =< 16 ; NY >= 34)) ; (NX > 100, (NY =< 16 ; NY >= 34))) ->
+            limit(NX, 1, 99, CX), limit(NY, 1, 49, CY),
+            retract(ball(_,_)), assertz(ball(pos(CX,CY), vel(0,0))),
             retractall(carrier(_,_)), retractall(cooldown(_)), assertz(cooldown(0))
         ;
             Speed is sqrt(VX*VX + VY*VY),
@@ -844,11 +765,11 @@ canvas { image-rendering:crisp-edges; }
     let prevOT = 'none', prevOR = 'none';
     let fieldLabel = '', fieldLabelAlpha = 0, prevFieldLabel = '';
     let goalOverlayTimer = 0;
-    let gameOverState = null;   // set when match ends, drives canvas result panel
+    let gameOverState = null;
     let prevSaves = 0;
-    let ballTrail = [];         // stores last N ball positions for trail effect
-    let prevBallSpd = 0;        // for detecting shots in the log
-    const shootingPlayers = new Set();  // track who was already logged as shooting
+    let ballTrail = [];
+    let prevBallSpd = 0;
+    const shootingPlayers = new Set();
 
     // ----------------------------------------------------------------
     // Init / Kick Off
@@ -1020,7 +941,6 @@ canvas { image-rendering:crisp-edges; }
                             });
                             list = list.args[1];
                         }
-                        // Update shooting tracker — clear players no longer shooting
                         shootingPlayers.clear();
                         currentShooters.forEach(k => shootingPlayers.add(k));
 
@@ -1068,8 +988,6 @@ canvas { image-rendering:crisp-edges; }
     // ----------------------------------------------------------------
     // Game over
     // ----------------------------------------------------------------
-    // Detect game over from already-known scores — no second Prolog query needed.
-    // (Avoids the Tau Prolog single-active-query limitation that causes race conditions.)
     function handleGameOver() {
         if (gameOverState) return;   // already handled
         const w = prevS1 >= 3 ? 'team1' : prevS2 >= 3 ? 'team2' : null;
@@ -1144,7 +1062,7 @@ canvas { image-rendering:crisp-edges; }
         canvasRRect(px, py, pw, ph, 18);
         ctx.fill();
 
-        // Winner-colored border (thicker)
+        // Winner-colored border
         ctx.strokeStyle = teamColor;
         ctx.lineWidth = 3;
         canvasRRect(px, py, pw, ph, 18);
@@ -1296,7 +1214,7 @@ canvas { image-rendering:crisp-edges; }
                        p.team === ownerTeam && p.role === ownerRole);
         });
 
-        // --- Ball trail (motion blur effect) ---
+        // --- Ball trail ---
         ballTrail.push({x: bx, y: by});
         if (ballTrail.length > 10) ballTrail.shift();
         const trailSpd = ballTrail.length > 1
@@ -1365,7 +1283,6 @@ canvas { image-rendering:crisp-edges; }
         ctx.textBaseline = 'bottom';
         ctx.fillText('● White ring = ball carrier', W - 12, H - 4);
         ctx.restore();
-
         // Game-over panel drawn on canvas is replaced by the HTML #winner-overlay
     }
 
@@ -1379,7 +1296,7 @@ canvas { image-rendering:crisp-edges; }
         ctx.beginPath(); ctx.ellipse(px, py+r*0.5, r*0.8, r*0.26, 0, 0, Math.PI*2);
         ctx.fillStyle = '#000'; ctx.fill(); ctx.restore();
 
-        // White ring — only when this player is the carrier (dribbling / last kicked)
+        // White ring — only when this player is the carrier
         if (isCarrier) {
             ctx.save(); ctx.globalAlpha = 0.9;
             ctx.strokeStyle = '#fff'; ctx.lineWidth = 2.5;
