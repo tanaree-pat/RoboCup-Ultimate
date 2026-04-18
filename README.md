@@ -51,10 +51,11 @@ open robocup_enhanced.html   # macOS
 
 ```
 robo-cup-2/
-└── robocup_enhanced.html   # Complete single-file application (~1364 lines)
-                            #   - HTML structure & Tailwind styling
-                            #   - Tau Prolog AI logic & ball physics
-                            #   - JavaScript game engine & Canvas renderer
+├── robocup_enhanced.html   # Complete single-file application
+│                     #   - HTML structure & Tailwind styling
+│                     #   - Tau Prolog AI logic & ball physics
+│                     #   - JavaScript game engine & Canvas renderer
+└── robocup.pl        # Prolog source (reference copy, not loaded at runtime)
 ```
 
 ## Architecture
